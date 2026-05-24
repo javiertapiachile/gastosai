@@ -49,3 +49,21 @@ def update_batch_progress(
     db.commit()
     db.refresh(batch)
     return batch
+
+
+def delete_batch(db: Session, batch_id: int) -> bool:
+    """
+    Elimina un batch y todas sus transacciones en cascada.
+    Retorna True si se eliminó, False si no existía.
+    """
+    from app.models.transaction import Transaction
+
+    batch = get_batch(db, batch_id)
+    if not batch:
+        return False
+
+    # Eliminar transacciones asociadas primero
+    db.query(Transaction).filter(Transaction.batch_id == batch_id).delete()
+    db.delete(batch)
+    db.commit()
+    return True
