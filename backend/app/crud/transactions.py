@@ -1,8 +1,7 @@
-"""Operaciones CRUD para transacciones, incluyendo filtros y KPIs."""
+"""Operaciones CRUD para transacciones, filtradas por usuario."""
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
-from datetime import date
 from typing import Optional
 
 from app.models.transaction import Transaction
@@ -23,9 +22,12 @@ def get_transactions(
     anio: Optional[int] = None,
     busqueda: Optional[str] = None,
     solo_cargos: Optional[bool] = None,
+    user_id: Optional[int] = None,
 ) -> tuple[list[Transaction], int]:
     query = db.query(Transaction)
 
+    if user_id is not None:
+        query = query.filter(Transaction.user_id == user_id)
     if categoria_id is not None:
         query = query.filter(Transaction.categoria_id == categoria_id)
     if mes is not None:
@@ -60,13 +62,9 @@ def create_transaction(db: Session, tx: TransactionCreate) -> Transaction:
 
 
 def create_transactions_bulk(db: Session, txs: list[dict]) -> list[Transaction]:
-    """
-    Inserción masiva. Hace refresh de cada objeto para obtener IDs generados.
-    """
     db_txs = [Transaction(**tx) for tx in txs]
     db.add_all(db_txs)
     db.commit()
-    # BUGFIX: refresh cada objeto para cargar el ID asignado por SQLite
     for tx in db_txs:
         db.refresh(tx)
     return db_txs
@@ -96,15 +94,17 @@ def get_kpi_summary(
     db: Session,
     mes: Optional[int] = None,
     anio: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> KPISummary:
     query = db.query(Transaction)
+    if user_id is not None:
+        query = query.filter(Transaction.user_id == user_id)
     if mes is not None:
         query = query.filter(extract("month", Transaction.fecha) == mes)
     if anio is not None:
         query = query.filter(extract("year", Transaction.fecha) == anio)
 
     todas = query.all()
-
     total_gastos = sum(t.monto for t in todas if t.es_cargo)
     total_ingresos = sum(t.monto for t in todas if not t.es_cargo)
     total_tx = len(todas)
@@ -119,6 +119,8 @@ def get_kpi_summary(
             .join(Transaction, Transaction.categoria_id == Category.id)
             .filter(Transaction.es_cargo == True)
         )
+        if user_id:
+            resultado = resultado.filter(Transaction.user_id == user_id)
         if mes:
             resultado = resultado.filter(extract("month", Transaction.fecha) == mes)
         if anio:
@@ -142,30 +144,33 @@ def get_gastos_por_categoria(
     db: Session,
     mes: Optional[int] = None,
     anio: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> list[dict]:
     query = (
         db.query(
-            Category.nombre,
-            Category.color,
+            Category.nombre, Category.color,
             func.sum(Transaction.monto).label("total"),
             func.count(Transaction.id).label("cantidad"),
         )
         .join(Transaction, Transaction.categoria_id == Category.id)
         .filter(Transaction.es_cargo == True)
     )
+    if user_id:
+        query = query.filter(Transaction.user_id == user_id)
     if mes:
         query = query.filter(extract("month", Transaction.fecha) == mes)
     if anio:
         query = query.filter(extract("year", Transaction.fecha) == anio)
 
     filas = query.group_by(Category.nombre, Category.color).order_by(func.sum(Transaction.monto).desc()).all()
-    return [
-        {"nombre": f.nombre, "color": f.color, "total": round(f.total, 2), "cantidad": f.cantidad}
-        for f in filas
-    ]
+    return [{"nombre": f.nombre, "color": f.color, "total": round(f.total, 2), "cantidad": f.cantidad} for f in filas]
 
 
-def get_evolucion_mensual(db: Session, anio: Optional[int] = None) -> list[dict]:
+def get_evolucion_mensual(
+    db: Session,
+    anio: Optional[int] = None,
+    user_id: Optional[int] = None,
+) -> list[dict]:
     query = (
         db.query(
             extract("year", Transaction.fecha).label("anio"),
@@ -174,6 +179,8 @@ def get_evolucion_mensual(db: Session, anio: Optional[int] = None) -> list[dict]
         )
         .filter(Transaction.es_cargo == True)
     )
+    if user_id:
+        query = query.filter(Transaction.user_id == user_id)
     if anio:
         query = query.filter(extract("year", Transaction.fecha) == anio)
 

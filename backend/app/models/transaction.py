@@ -1,7 +1,4 @@
-"""
-Modelo SQLAlchemy para transacciones bancarias.
-Almacena tanto el texto original del extracto como la versión limpia generada por IA.
-"""
+"""Modelo SQLAlchemy para transacciones bancarias."""
 
 from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Boolean
 from sqlalchemy.sql import func
@@ -17,24 +14,28 @@ class Transaction(Base):
     # Datos originales del extracto
     descripcion_original = Column(String(500), nullable=False)
     monto = Column(Float, nullable=False)
-    es_cargo = Column(Boolean, default=True, nullable=False)  # True=cargo, False=abono
+    es_cargo = Column(Boolean, default=True, nullable=False)
     fecha = Column(Date, nullable=False, index=True)
     rut_comercio = Column(String(20), nullable=True)
 
     # Datos enriquecidos por IA
-    comercio_limpio = Column(String(200), nullable=True)  # Nombre legible
+    comercio_limpio = Column(String(200), nullable=True)
     descripcion_limpia = Column(String(200), nullable=True)
 
     # Clasificación
     categoria_id = Column(Integer, ForeignKey("categories.id"), nullable=True, index=True)
     categoria = relationship("Category", back_populates="transacciones")
-    confianza_clasificacion = Column(Float, nullable=True)  # 0.0 a 1.0
+    confianza_clasificacion = Column(Float, nullable=True)
     clasificado_por_cache = Column(Boolean, default=False)
     revisado_por_usuario = Column(Boolean, default=False)
 
     # Lote de origen
     batch_id = Column(Integer, ForeignKey("upload_batches.id"), nullable=True, index=True)
     batch = relationship("UploadBatch", back_populates="transacciones")
+
+    # Usuario propietario
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
+    usuario = relationship("User", back_populates="transacciones")
 
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
 

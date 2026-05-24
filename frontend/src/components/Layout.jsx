@@ -1,9 +1,9 @@
 /**
- * Layout principal: topbar con navegación + área de contenido.
- * Todas las páginas se renderizan dentro de este componente.
+ * Layout principal con nav + info de usuario + logout.
  */
 
 import { NavLink, Outlet } from "react-router-dom";
+import { useAuthStore } from "../store/authStore";
 
 const NAV_ITEMS = [
   { to: "/",              label: "Dashboard" },
@@ -13,10 +13,13 @@ const NAV_ITEMS = [
 ];
 
 export default function Layout() {
+  const { usuario, logout } = useAuthStore();
+
   return (
     <div style={styles.wrapper}>
       <header style={styles.topbar}>
         <span style={styles.logo}>💸 GastosAI</span>
+
         <nav style={styles.nav}>
           {NAV_ITEMS.map(({ to, label }) => (
             <NavLink
@@ -32,6 +35,17 @@ export default function Layout() {
             </NavLink>
           ))}
         </nav>
+
+        {/* Info de usuario */}
+        <div style={styles.userArea}>
+          <span style={styles.userName}>
+            {usuario?.nombre}
+            {usuario?.es_admin && <span style={styles.adminBadge}>admin</span>}
+          </span>
+          <button style={styles.btnLogout} onClick={logout}>
+            Salir
+          </button>
+        </div>
       </header>
 
       <main style={styles.main}>
@@ -55,7 +69,7 @@ const styles = {
     height: "52px",
     display: "flex",
     alignItems: "center",
-    gap: "24px",
+    gap: "16px",
     position: "sticky",
     top: 0,
     zIndex: 100,
@@ -66,10 +80,12 @@ const styles = {
     color: "var(--text-primary)",
     letterSpacing: "-0.02em",
     marginRight: "8px",
+    whiteSpace: "nowrap",
   },
   nav: {
     display: "flex",
     gap: "4px",
+    flex: 1,
   },
   navLink: {
     fontSize: "13px",
@@ -79,10 +95,42 @@ const styles = {
     padding: "5px 10px",
     borderRadius: "var(--radius-md)",
     transition: "var(--transition-fast)",
+    whiteSpace: "nowrap",
   },
   navLinkActive: {
     backgroundColor: "var(--accent-light)",
     color: "var(--accent-text)",
+  },
+  userArea: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    marginLeft: "auto",
+  },
+  userName: {
+    fontSize: "13px",
+    color: "var(--text-secondary)",
+    display: "flex",
+    alignItems: "center",
+    gap: "6px",
+  },
+  adminBadge: {
+    fontSize: "10px",
+    fontWeight: "600",
+    backgroundColor: "var(--accent-light)",
+    color: "var(--accent-text)",
+    padding: "1px 6px",
+    borderRadius: "99px",
+  },
+  btnLogout: {
+    fontSize: "12px",
+    fontWeight: "500",
+    border: "1px solid var(--border-default)",
+    borderRadius: "var(--radius-md)",
+    padding: "4px 12px",
+    cursor: "pointer",
+    backgroundColor: "var(--bg-secondary)",
+    color: "var(--text-secondary)",
   },
   main: {
     flex: 1,

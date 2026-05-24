@@ -1,7 +1,4 @@
-"""
-Servicio de exportación de transacciones.
-Genera CSV o JSON descargable con todos los campos relevantes.
-"""
+"""Exportación de transacciones filtradas por usuario."""
 
 import csv
 import json
@@ -10,8 +7,6 @@ from datetime import date
 from typing import Optional
 from sqlalchemy.orm import Session
 
-from app.models.transaction import Transaction
-from app.models.category import Category
 from app.crud.transactions import get_transactions
 
 
@@ -20,35 +15,16 @@ def exportar_csv(
     mes: Optional[int] = None,
     anio: Optional[int] = None,
     categoria_id: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> bytes:
-    """
-    Genera un archivo CSV con las transacciones filtradas.
-    Retorna bytes listos para enviar como respuesta HTTP.
-    """
     items, _ = get_transactions(
-        db,
-        pagina=1,
-        por_pagina=100_000,  # Exportar todo
-        mes=mes,
-        anio=anio,
-        categoria_id=categoria_id,
+        db, pagina=1, por_pagina=100_000,
+        mes=mes, anio=anio, categoria_id=categoria_id, user_id=user_id,
     )
 
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";", quoting=csv.QUOTE_MINIMAL)
-
-    # Encabezados
-    writer.writerow([
-        "Fecha",
-        "Descripcion Original",
-        "Comercio Limpio",
-        "Monto",
-        "Tipo",
-        "Categoria",
-        "Confianza IA",
-        "Revisado",
-        "RUT Comercio",
-    ])
+    writer.writerow(["Fecha","Descripcion Original","Comercio Limpio","Monto","Tipo","Categoria","Confianza IA","Revisado","RUT Comercio"])
 
     for tx in items:
         writer.writerow([
@@ -63,7 +39,7 @@ def exportar_csv(
             tx.rut_comercio or "",
         ])
 
-    return output.getvalue().encode("utf-8-sig")  # UTF-8 con BOM para Excel
+    return output.getvalue().encode("utf-8-sig")
 
 
 def exportar_json(
@@ -71,17 +47,11 @@ def exportar_json(
     mes: Optional[int] = None,
     anio: Optional[int] = None,
     categoria_id: Optional[int] = None,
+    user_id: Optional[int] = None,
 ) -> bytes:
-    """
-    Genera un archivo JSON con las transacciones filtradas.
-    """
     items, total = get_transactions(
-        db,
-        pagina=1,
-        por_pagina=100_000,
-        mes=mes,
-        anio=anio,
-        categoria_id=categoria_id,
+        db, pagina=1, por_pagina=100_000,
+        mes=mes, anio=anio, categoria_id=categoria_id, user_id=user_id,
     )
 
     datos = {
@@ -103,5 +73,4 @@ def exportar_json(
             for tx in items
         ],
     }
-
     return json.dumps(datos, ensure_ascii=False, indent=2).encode("utf-8")
