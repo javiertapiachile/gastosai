@@ -1,4 +1,4 @@
-"""GastosAI — Backend principal con autenticación JWT."""
+"""GastosAI — Backend principal."""
 
 import logging
 from contextlib import asynccontextmanager
@@ -23,20 +23,18 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("🚀 GastosAI backend iniciando...")
     logger.info(f"   Proveedor LLM: {settings.llm_provider}")
+    logger.info(f"   CORS origins: {settings.cors_origins}")
     yield
     logger.info("🛑 GastosAI backend detenido")
 
 
-app = FastAPI(
-    title="GastosAI API",
-    version="4.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="GastosAI API", version="4.0.0", lifespan=lifespan)
 
+# CORS — permite * para acceso desde red local
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
+    allow_credentials=settings.cors_origins != "*",  # credentials=True no funciona con *
     allow_methods=["*"],
     allow_headers=["*"],
 )
