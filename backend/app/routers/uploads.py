@@ -1,19 +1,18 @@
 """
 Endpoint de subida de archivos.
-Fase 2: implementación real con parseo multi-formato y background tasks.
+Fase 3: integra clasificador LLM después del parseo.
 """
 
-import asyncio
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.database import get_db, SessionLocal
 from app.schemas.upload import UploadBatchOut, UploadBatchCreate
-from app.schemas.transaction import TransactionCreate
 from app.crud import uploads as crud_uploads
 from app.crud import transactions as crud_tx
 from app.models.upload import BatchStatus
 from app.services.parser import get_parser
+from app.services.classifier import clasificar_transacciones
 from app.utils.file_utils import validar_extension, validar_tamanio, limpiar_nombre
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
@@ -21,7 +20,6 @@ router = APIRouter(prefix="/uploads", tags=["uploads"])
 
 @router.get("/", response_model=list[UploadBatchOut])
 async def listar_uploads(db: Session = Depends(get_db)):
-    """Lista el historial de archivos importados."""
     return crud_uploads.get_batches(db)
 
 
@@ -40,30 +38,26 @@ async def subir_archivo(
     db: Session = Depends(get_db),
 ):
     """
-    Recibe un archivo bancario, lo registra y lanza el parseo en background.
-    Retorna 202 Accepted con el batch_id para hacer polling a /{batch_id}.
+    Recibe archivo bancario → parsea → clasifica con LLM.
+    Retorna 202 Accepted con batch_id para polling.
     """
-    # Validar extensión
     try:
         extension = validar_extension(file.filename or "")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Leer contenido y validar tamaño
     contenido = await file.read()
     try:
         validar_tamanio(len(contenido))
     except ValueError as e:
         raise HTTPException(status_code=413, detail=str(e))
 
-    # Crear batch en DB
     nombre_limpio = limpiar_nombre(file.filename or "archivo")
     batch = crud_uploads.create_batch(
         db,
         UploadBatchCreate(nombre_archivo=nombre_limpio, tipo_archivo=extension),
     )
 
-    # Lanzar parseo en background (no bloquea la respuesta HTTP)
     background_tasks.add_task(
         _procesar_archivo_background,
         batch_id=batch.id,
@@ -82,18 +76,17 @@ async def _procesar_archivo_background(
     tipo_archivo: str,
 ) -> None:
     """
-    Tarea background que:
-    1. Parsea el archivo
-    2. Inserta las transacciones en la DB
-    3. Actualiza el estado del batch
+    Background task completo:
+    1. Parsear archivo → transacciones raw
+    2. Insertar transacciones en DB
+    3. Clasificar con LLM (caché + API)
+    4. Actualizar estado del batch
     """
-    # Crear sesión propia para el background task
     db = SessionLocal()
     try:
-        # Marcar como procesando
+        # Fase A: parseo
         crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.procesando)
 
-        # Parsear archivo
         parser = get_parser(tipo_archivo)
         resultado = await parser.parsear(contenido, nombre_archivo)
 
@@ -105,13 +98,11 @@ async def _procesar_archivo_background(
             return
 
         total = len(resultado.transacciones)
-
-        # Actualizar total
         crud_uploads.update_batch_progress(db, batch_id, 0, total, BatchStatus.procesando)
 
-        # Insertar transacciones en lotes de 50
+        # Insertar en lotes de 50
         LOTE = 50
-        insertadas = 0
+        ids_insertados = []
         for i in range(0, total, LOTE):
             lote = resultado.transacciones[i:i + LOTE]
             datos = [
@@ -125,17 +116,33 @@ async def _procesar_archivo_background(
                 }
                 for tx in lote
             ]
-            crud_tx.create_transactions_bulk(db, datos)
-            insertadas += len(lote)
-            crud_uploads.update_batch_progress(db, batch_id, insertadas, total, BatchStatus.procesando)
+            txs_db = crud_tx.create_transactions_bulk(db, datos)
+            ids_insertados.extend([t.id for t in txs_db])
+            crud_uploads.update_batch_progress(
+                db, batch_id, len(ids_insertados), total, BatchStatus.procesando
+            )
 
-        # Completado
+        # Fase B: clasificación LLM
+        crud_uploads.update_batch_progress(db, batch_id, 0, total, BatchStatus.clasificando)
+
+        # Cargar transacciones recién insertadas para clasificar
+        from app.models.transaction import Transaction
+        txs_para_clasificar = (
+            db.query(Transaction)
+            .filter(Transaction.batch_id == batch_id)
+            .all()
+        )
+
+        stats = await clasificar_transacciones(db, txs_para_clasificar)
+        print(f"[batch {batch_id}] Clasificación: {stats}")
+
         crud_uploads.update_batch_progress(db, batch_id, total, total, BatchStatus.completado)
 
     except Exception as e:
+        print(f"[batch {batch_id}] Error inesperado: {e}")
         crud_uploads.update_batch_progress(
             db, batch_id, 0, 0, BatchStatus.error,
-            error=f"Error inesperado: {str(e)}"
+            error=f"Error inesperado: {str(e)[:400]}"
         )
     finally:
         db.close()
