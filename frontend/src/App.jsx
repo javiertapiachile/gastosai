@@ -5,9 +5,9 @@
 
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Layout from "./components/Layout";
+import ImportarPage from "./pages/Importar";
 import {
   DashboardPage,
-  ImportarPage,
   TransaccionesPage,
   ConfiguracionPage,
 } from "./pages/index";
