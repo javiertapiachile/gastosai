@@ -32,24 +32,25 @@ def upgrade() -> None:
     op.create_index("ix_users_id", "users", ["id"])
     op.create_index("ix_users_email", "users", ["email"], unique=True)
 
-    # Agregar user_id a upload_batches
+    # Agregar user_id a upload_batches — sin foreign key constraint
+    # (SQLite no enforcea FK constraints de todas formas)
     op.add_column("upload_batches", sa.Column("user_id", sa.Integer(), nullable=True))
     op.create_index("ix_upload_batches_user_id", "upload_batches", ["user_id"])
-    op.create_foreign_key("fk_batches_user", "upload_batches", "users", ["user_id"], ["id"])
 
-    # Agregar user_id a transactions
+    # Agregar user_id a transactions — sin foreign key constraint
     op.add_column("transactions", sa.Column("user_id", sa.Integer(), nullable=True))
     op.create_index("ix_transactions_user_id", "transactions", ["user_id"])
-    op.create_foreign_key("fk_transactions_user", "transactions", "users", ["user_id"], ["id"])
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_transactions_user", "transactions", type_="foreignkey")
-    op.drop_index("ix_transactions_user_id", "transactions")
-    op.drop_column("transactions", "user_id")
+    with op.batch_alter_table("transactions") as batch_op:
+        batch_op.drop_index("ix_transactions_user_id")
+        batch_op.drop_column("user_id")
 
-    op.drop_constraint("fk_batches_user", "upload_batches", type_="foreignkey")
-    op.drop_index("ix_upload_batches_user_id", "upload_batches")
-    op.drop_column("upload_batches", "user_id")
+    with op.batch_alter_table("upload_batches") as batch_op:
+        batch_op.drop_index("ix_upload_batches_user_id")
+        batch_op.drop_column("user_id")
 
+    op.drop_index("ix_users_email", "users")
+    op.drop_index("ix_users_id", "users")
     op.drop_table("users")

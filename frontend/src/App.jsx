@@ -1,6 +1,5 @@
 /**
  * App con rutas protegidas por autenticación.
- * Si no hay token, muestra LoginPage.
  */
 
 import { useEffect } from "react";
@@ -14,26 +13,23 @@ import TransaccionesPage from "./pages/Transacciones";
 import ConfiguracionPage from "./pages/Settings";
 
 function RutaProtegida({ children }) {
-  const { token } = useAuthStore();
+  // Leer token directamente del store — compatible con Zustand v5
+  const token = useAuthStore((state) => state.token);
   if (!token) return <Navigate to="/login" replace />;
   return children;
 }
 
 export default function App() {
-  const { inicializar } = useAuthStore();
+  const inicializar = useAuthStore((state) => state.inicializar);
 
   useEffect(() => {
-    // Restaurar token del localStorage al arrancar
     inicializar();
   }, []);
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* Ruta pública */}
         <Route path="/login" element={<LoginPage />} />
-
-        {/* Rutas protegidas */}
         <Route
           path="/"
           element={
@@ -47,8 +43,6 @@ export default function App() {
           <Route path="transacciones" element={<TransaccionesPage />} />
           <Route path="configuracion" element={<ConfiguracionPage />} />
         </Route>
-
-        {/* Cualquier ruta desconocida → home */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

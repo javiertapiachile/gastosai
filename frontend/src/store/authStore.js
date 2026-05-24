@@ -1,6 +1,7 @@
 /**
  * Store de autenticación.
  * Persiste el token en localStorage para mantener la sesión entre recargas.
+ * Compatible con Zustand v5.
  */
 
 import { create } from "zustand";
@@ -15,14 +16,12 @@ export const useAuthStore = create((set, get) => ({
   cargando: false,
   error: null,
 
-  get autenticado() {
-    return !!get().token;
-  },
+  // Zustand v5: no soporta getters — usar función o campo computado al leer
+  estaAutenticado: () => !!get().token,
 
   setToken: (token, usuario) => {
     localStorage.setItem(TOKEN_KEY, token);
     localStorage.setItem(USER_KEY, JSON.stringify(usuario));
-    // Inyectar token en todas las peticiones axios
     client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
     set({ token, usuario, error: null });
   },
@@ -35,7 +34,6 @@ export const useAuthStore = create((set, get) => ({
   },
 
   inicializar: () => {
-    // Restaurar token al arrancar la app
     const token = localStorage.getItem(TOKEN_KEY);
     if (token) {
       client.defaults.headers.common["Authorization"] = `Bearer ${token}`;
@@ -49,7 +47,7 @@ export const useAuthStore = create((set, get) => ({
       get().setToken(data.access_token, data.usuario);
       return true;
     } catch (err) {
-      const msg = err.response?.data?.detail || "Error al iniciar sesión";
+      const msg = err.response?.data?.detail || "Email o contraseña incorrectos";
       set({ error: msg });
       return false;
     } finally {
