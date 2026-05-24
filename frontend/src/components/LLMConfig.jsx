@@ -1,7 +1,7 @@
 /**
- * Panel de configuración del proveedor LLM.
- * Muestra el proveedor activo y permite probar la conexión.
- * La API key se configura en el .env — no se expone en la UI por seguridad.
+ * Panel de configuración LLM con actualización en caliente.
+ * Los cambios se aplican inmediatamente sin reiniciar Docker.
+ * Para que sean permanentes hay que actualizar el .env.
  */
 
 import { useState } from "react";
@@ -12,229 +12,260 @@ const PROVEEDORES = [
     id: "anthropic",
     nombre: "Anthropic Claude",
     modelo: "claude-3-5-haiku-latest",
-    descripcion: "Rápido, preciso y económico. Recomendado.",
-    url: "https://console.anthropic.com",
+    descripcion: "Rápido y preciso. Recomendado para clasificación.",
+    campoKey: "anthropic_api_key",
+    placeholder: "sk-ant-api03-...",
   },
   {
     id: "openai",
     nombre: "OpenAI",
     modelo: "gpt-4o-mini",
-    descripcion: "Excelente calidad de clasificación.",
-    url: "https://platform.openai.com/api-keys",
+    descripcion: "Excelente calidad, costo muy bajo.",
+    campoKey: "openai_api_key",
+    placeholder: "sk-proj-...",
   },
   {
     id: "ollama",
     nombre: "Ollama (local)",
-    modelo: "llama3, mistral, etc.",
-    descripcion: "100% local, sin costo de API. Requiere Ollama instalado.",
-    url: "https://ollama.ai",
+    modelo: "gemma4, llama3, mistral...",
+    descripcion: "100% local, sin costo. Requiere Ollama instalado.",
+    campoKey: null,
   },
 ];
 
-export default function LLMConfig({ configActual }) {
+export default function LLMConfig({ configActual, onActualizado }) {
+  const [proveedorSeleccionado, setProveedorSeleccionado] = useState(
+    configActual?.llm_provider || "anthropic"
+  );
+  const [apiKey, setApiKey] = useState("");
+  const [ollamaModel, setOllamaModel] = useState(configActual?.ollama_model || "");
+  const [ollamaUrl, setOllamaUrl] = useState(configActual?.ollama_base_url || "");
+  const [guardando, setGuardando] = useState(false);
   const [probando, setProbando] = useState(false);
-  const [resultado, setResultado] = useState(null);
+  const [resultadoTest, setResultadoTest] = useState(null);
+  const [error, setError] = useState(null);
+  const [exito, setExito] = useState(null);
+
+  async function guardarConfig() {
+    setGuardando(true);
+    setError(null);
+    setExito(null);
+
+    const payload = { llm_provider: proveedorSeleccionado };
+
+    if (proveedorSeleccionado === "anthropic" && apiKey) {
+      payload.anthropic_api_key = apiKey;
+    }
+    if (proveedorSeleccionado === "openai" && apiKey) {
+      payload.openai_api_key = apiKey;
+    }
+    if (proveedorSeleccionado === "ollama") {
+      if (ollamaModel) payload.ollama_model = ollamaModel;
+      if (ollamaUrl) payload.ollama_base_url = ollamaUrl;
+    }
+
+    try {
+      const { data } = await client.patch("/config/", payload);
+      setExito(`✅ ${data.mensaje}`);
+      setApiKey(""); // Limpiar key por seguridad
+      onActualizado?.();
+    } catch (err) {
+      setError(err.response?.data?.detail || "Error al guardar configuración");
+    } finally {
+      setGuardando(false);
+    }
+  }
 
   async function probarConexion() {
     setProbando(true);
-    setResultado(null);
+    setResultadoTest(null);
     try {
       const { data } = await client.get("/config/llm/test");
-      setResultado(data);
+      setResultadoTest(data);
     } catch (err) {
-      setResultado({ ok: false, error: err.message });
+      setResultadoTest({ ok: false, error: err.message });
     } finally {
       setProbando(false);
     }
   }
 
-  const proveedorActivo = PROVEEDORES.find(
-    (p) => p.id === configActual?.llm_provider
-  );
+  const proveedor = PROVEEDORES.find(p => p.id === proveedorSeleccionado);
+  const proveedorActualEnServidor = configActual?.llm_provider;
 
   return (
     <div style={styles.seccion}>
       <h2 style={styles.titulo}>Proveedor LLM</h2>
-      <p style={styles.desc}>
-        El proveedor activo se configura en el archivo <code style={styles.code}>.env</code>.
-        Para cambiarlo, edita <code style={styles.code}>LLM_PROVIDER</code> y reinicia Docker.
-      </p>
 
-      {/* Tarjetas de proveedores */}
+      {/* Selector de proveedor */}
       <div style={styles.grid}>
         {PROVEEDORES.map((p) => {
-          const activo = p.id === configActual?.llm_provider;
-          const configurado =
-            (p.id === "anthropic" && configActual?.anthropic_configurado) ||
-            (p.id === "openai" && configActual?.openai_configurado) ||
-            p.id === "ollama";
-
+          const activo = p.id === proveedorActualEnServidor;
+          const seleccionado = p.id === proveedorSeleccionado;
           return (
             <div
               key={p.id}
+              onClick={() => { setProveedorSeleccionado(p.id); setResultadoTest(null); setExito(null); }}
               style={{
                 ...styles.card,
-                ...(activo ? styles.cardActivo : {}),
+                ...(seleccionado ? styles.cardSeleccionado : {}),
+                cursor: "pointer",
               }}
             >
               <div style={styles.cardHeader}>
                 <span style={styles.cardNombre}>{p.nombre}</span>
-                {activo && <span style={styles.badgeActivo}>Activo</span>}
-                {!activo && configurado && (
-                  <span style={styles.badgeConfig}>Configurado</span>
-                )}
+                {activo && <span style={styles.badgeActivo}>activo</span>}
               </div>
               <div style={styles.cardModelo}>{p.modelo}</div>
               <div style={styles.cardDesc}>{p.descripcion}</div>
-              <a
-                href={p.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={styles.cardLink}
-              >
-                {p.id === "ollama" ? "Descargar Ollama →" : "Obtener API Key →"}
-              </a>
             </div>
           );
         })}
       </div>
 
-      {/* Proveedor actual */}
-      <div style={styles.infoBox}>
-        <div style={styles.infoRow}>
-          <span style={styles.infoLabel}>Proveedor activo</span>
-          <span style={styles.infoValor}>
-            {proveedorActivo?.nombre ?? configActual?.llm_provider ?? "—"}
-          </span>
-        </div>
-        <div style={styles.infoRow}>
-          <span style={styles.infoLabel}>Anthropic API Key</span>
-          <span style={styles.infoValor}>
-            {configActual?.anthropic_configurado ? "✅ Configurada" : "❌ No configurada"}
-          </span>
-        </div>
-        <div style={styles.infoRow}>
-          <span style={styles.infoLabel}>OpenAI API Key</span>
-          <span style={styles.infoValor}>
-            {configActual?.openai_configurado ? "✅ Configurada" : "❌ No configurada"}
-          </span>
-        </div>
-        {configActual?.llm_provider === "ollama" && (
-          <div style={styles.infoRow}>
-            <span style={styles.infoLabel}>Modelo Ollama</span>
-            <span style={styles.infoValor}>{configActual?.ollama_model}</span>
+      {/* Campos específicos del proveedor */}
+      <div style={styles.campos}>
+        {(proveedorSeleccionado === "anthropic" || proveedorSeleccionado === "openai") && (
+          <div style={styles.campo}>
+            <label style={styles.label}>
+              API Key
+              {configActual?.[proveedorSeleccionado === "anthropic" ? "anthropic_configurado" : "openai_configurado"] && (
+                <span style={styles.yaConfigurado}> ✓ ya configurada</span>
+              )}
+            </label>
+            <input
+              type="password"
+              placeholder={proveedor?.placeholder || "Ingresa tu API key"}
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={styles.input}
+            />
+            <span style={styles.hint}>
+              Deja vacío para mantener la key actual.
+            </span>
           </div>
+        )}
+
+        {proveedorSeleccionado === "ollama" && (
+          <>
+            <div style={styles.campo}>
+              <label style={styles.label}>Modelo</label>
+              <input
+                type="text"
+                placeholder={configActual?.ollama_model || "gemma4:latest"}
+                value={ollamaModel}
+                onChange={(e) => setOllamaModel(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+            <div style={styles.campo}>
+              <label style={styles.label}>URL de Ollama</label>
+              <input
+                type="text"
+                placeholder={configActual?.ollama_base_url || "http://host.docker.internal:11434"}
+                value={ollamaUrl}
+                onChange={(e) => setOllamaUrl(e.target.value)}
+                style={styles.input}
+              />
+            </div>
+          </>
         )}
       </div>
 
-      {/* Botón de prueba */}
-      <div style={styles.testRow}>
+      {error && <div style={styles.errorBox}>{error}</div>}
+      {exito && <div style={styles.exitoBox}>{exito}</div>}
+
+      {/* Acciones */}
+      <div style={styles.acciones}>
+        <button
+          style={{ ...styles.btnGuardar, opacity: guardando ? 0.7 : 1 }}
+          onClick={guardarConfig}
+          disabled={guardando}
+        >
+          {guardando ? "Guardando..." : "Aplicar configuración"}
+        </button>
+
         <button
           style={{ ...styles.btnTest, opacity: probando ? 0.7 : 1 }}
           onClick={probarConexion}
           disabled={probando}
         >
-          {probando ? "Probando conexión..." : "🔌 Probar conexión LLM"}
+          {probando ? "Probando..." : "🔌 Probar conexión"}
         </button>
 
-        {resultado && (
-          <div style={{
-            ...styles.resultadoBox,
-            backgroundColor: resultado.ok ? "var(--success-light)" : "var(--danger-light)",
-            color: resultado.ok ? "var(--success)" : "var(--danger)",
+        {resultadoTest && (
+          <span style={{
+            fontSize: 13, fontWeight: 500, padding: "6px 12px",
+            borderRadius: "var(--radius-md)",
+            color: resultadoTest.ok ? "var(--success)" : "var(--danger)",
+            backgroundColor: resultadoTest.ok ? "var(--success-light)" : "var(--danger-light)",
           }}>
-            {resultado.ok
-              ? `✅ Conectado — ${resultado.proveedor}`
-              : `❌ Error — ${resultado.error}`}
-          </div>
+            {resultadoTest.ok
+              ? `✅ ${resultadoTest.proveedor}`
+              : `❌ ${resultadoTest.error?.slice(0, 60)}`}
+          </span>
         )}
       </div>
+
+      <p style={styles.nota}>
+        Los cambios se aplican inmediatamente. Para que sean permanentes entre reinicios,
+        actualiza también el archivo <code style={styles.code}>.env</code>.
+      </p>
     </div>
   );
 }
 
 const styles = {
   seccion: {
-    backgroundColor: "var(--bg-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-lg)",
-    padding: "24px",
-    marginBottom: 16,
+    backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
+    borderRadius: "var(--radius-lg)", padding: "24px", marginBottom: 16,
   },
-  titulo: { fontSize: 15, fontWeight: 600, marginBottom: 8 },
-  desc: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 20, lineHeight: 1.6 },
-  code: {
-    fontFamily: "var(--font-mono)",
-    fontSize: 12,
-    backgroundColor: "var(--bg-secondary)",
-    padding: "1px 5px",
-    borderRadius: 3,
-  },
-
-  grid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 },
+  titulo: { fontSize: 15, fontWeight: 600, marginBottom: 16 },
+  grid: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 },
   card: {
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-md)",
-    padding: "14px 16px",
-    cursor: "default",
+    border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)",
+    padding: "12px 14px", transition: "all 0.15s",
   },
-  cardActivo: {
-    borderColor: "var(--accent)",
-    backgroundColor: "var(--accent-light)",
-  },
-  cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
-  cardNombre: { fontSize: 13, fontWeight: 600, color: "var(--text-primary)" },
+  cardSeleccionado: { borderColor: "var(--accent)", backgroundColor: "var(--accent-light)" },
+  cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 },
+  cardNombre: { fontSize: 13, fontWeight: 600 },
   badgeActivo: {
-    fontSize: 10,
-    fontWeight: 600,
-    backgroundColor: "var(--accent)",
-    color: "white",
-    padding: "2px 7px",
-    borderRadius: 99,
+    fontSize: 10, fontWeight: 600, backgroundColor: "var(--success-light)",
+    color: "var(--success)", padding: "1px 6px", borderRadius: 99,
   },
-  badgeConfig: {
-    fontSize: 10,
-    fontWeight: 600,
-    backgroundColor: "var(--success-light)",
-    color: "var(--success)",
-    padding: "2px 7px",
-    borderRadius: 99,
+  cardModelo: { fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-secondary)", marginBottom: 4 },
+  cardDesc: { fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.4 },
+  campos: { marginBottom: 14 },
+  campo: { marginBottom: 10 },
+  label: { display: "block", fontSize: 12, fontWeight: 500, color: "var(--text-secondary)", marginBottom: 5 },
+  yaConfigurado: { fontWeight: 400, color: "var(--success)" },
+  input: {
+    width: "100%", padding: "8px 12px", fontSize: 13,
+    border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)",
+    backgroundColor: "var(--bg-secondary)", color: "var(--text-primary)",
+    outline: "none", boxSizing: "border-box",
   },
-  cardModelo: { fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--text-secondary)", marginBottom: 6 },
-  cardDesc: { fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5, marginBottom: 10 },
-  cardLink: { fontSize: 12, color: "var(--accent)", textDecoration: "none" },
-
-  infoBox: {
-    backgroundColor: "var(--bg-secondary)",
-    borderRadius: "var(--radius-md)",
-    padding: "12px 16px",
-    marginBottom: 16,
+  hint: { fontSize: 11, color: "var(--text-tertiary)", marginTop: 3, display: "block" },
+  errorBox: {
+    backgroundColor: "var(--danger-light)", color: "var(--danger)",
+    borderRadius: "var(--radius-md)", padding: "10px 14px", fontSize: 13, marginBottom: 12,
   },
-  infoRow: {
-    display: "flex",
-    justifyContent: "space-between",
-    padding: "5px 0",
-    fontSize: 13,
-    borderBottom: "1px solid var(--border-default)",
+  exitoBox: {
+    backgroundColor: "var(--success-light)", color: "var(--success)",
+    borderRadius: "var(--radius-md)", padding: "10px 14px", fontSize: 13, marginBottom: 12,
   },
-  infoLabel: { color: "var(--text-secondary)" },
-  infoValor: { fontWeight: 500, color: "var(--text-primary)" },
-
-  testRow: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  acciones: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 12 },
+  btnGuardar: {
+    fontSize: 13, fontWeight: 500, backgroundColor: "var(--accent)", color: "white",
+    border: "none", borderRadius: "var(--radius-md)", padding: "8px 16px", cursor: "pointer",
+  },
   btnTest: {
-    fontSize: 13,
-    fontWeight: 500,
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-md)",
-    padding: "8px 16px",
-    backgroundColor: "var(--bg-primary)",
+    fontSize: 13, border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)",
+    padding: "8px 14px", cursor: "pointer", backgroundColor: "var(--bg-secondary)",
     color: "var(--text-primary)",
-    cursor: "pointer",
   },
-  resultadoBox: {
-    fontSize: 13,
-    fontWeight: 500,
-    padding: "8px 14px",
-    borderRadius: "var(--radius-md)",
+  nota: { fontSize: 11, color: "var(--text-tertiary)", lineHeight: 1.6 },
+  code: {
+    fontFamily: "var(--font-mono)", fontSize: 11, backgroundColor: "var(--bg-secondary)",
+    padding: "1px 4px", borderRadius: 3,
   },
 };

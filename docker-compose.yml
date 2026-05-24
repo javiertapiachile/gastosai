@@ -8,18 +8,17 @@ services:
     container_name: gastosai_backend
     restart: unless-stopped
     ports:
-      - "0.0.0.0:8000:8000"  # Escuchar en todas las interfaces de red
+      - "0.0.0.0:8000:8000"
     volumes:
       - gastosai_data:/app/data
     environment:
       - DATABASE_URL=sqlite:////app/data/gastosai.db
-      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3}
       - MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-50}
-      # Permitir acceso desde cualquier origen en la red local
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -34,7 +33,7 @@ services:
     container_name: gastosai_frontend
     restart: unless-stopped
     ports:
-      - "0.0.0.0:5173:80"  # Escuchar en todas las interfaces de red
+      - "0.0.0.0:80:80"   # Puerto 80 — acceso sin número de puerto
     depends_on:
       backend:
         condition: service_healthy

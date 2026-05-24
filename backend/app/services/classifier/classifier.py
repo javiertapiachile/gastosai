@@ -1,23 +1,23 @@
 """
-Clasificador principal de transacciones.
-
-Bugs corregidos en Fase A:
-  - Bug 3: _aplicar_clasificacion usaba update_transaction() + setattr() en conflicto
-  - Bug 4: mapa_categorias usaba .lower() pero lookup no coincidía con tildes
-  - Bug 1: errores ahora se loguean con traceback completo
+Clasificador principal optimizado.
+Orden de prioridad:
+  1. Reglas manuales (sin LLM, instantáneo)
+  2. Caché SQLite (sin LLM, instantáneo)
+  3. LLM con prompt compacto y lotes de 10 (optimización A+B)
 """
 
-import json
-import re
 import logging
 import traceback
+from typing import Callable, Optional
 from sqlalchemy.orm import Session
 
 from app.services.llm.factory import get_llm_provider
 from app.services.llm.prompts import (
     PROMPT_SISTEMA,
-    construir_prompt_clasificacion,
+    TAMANO_LOTE_OPTIMIZADO,
     CATEGORIAS_BASE,
+    construir_prompt_clasificacion,
+    parsear_respuesta_compacta,
 )
 from app.services.classifier.cache import buscar_en_cache, guardar_en_cache
 from app.crud.categories import get_categories
@@ -25,132 +25,164 @@ from app.models.transaction import Transaction
 
 logger = logging.getLogger(__name__)
 
-TAMANO_LOTE_LLM = 20
-
 
 async def clasificar_transacciones(
     db: Session,
     transacciones: list[Transaction],
+    on_progreso: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
-    """
-    Clasifica transacciones usando caché + LLM.
-    Retorna estadísticas del proceso.
-    """
-    stats = {"total": len(transacciones), "desde_cache": 0, "desde_llm": 0, "errores": 0}
+    stats = {
+        "total": len(transacciones),
+        "desde_reglas": 0,
+        "desde_cache": 0,
+        "desde_llm": 0,
+        "errores": 0,
+    }
 
     if not transacciones:
         return stats
 
     categorias = get_categories(db, solo_activas=True)
     nombres_categorias = [c.nombre for c in categorias] or CATEGORIAS_BASE
-
-    # BUGFIX 4: usar el nombre exacto (con tildes y mayúsculas) como clave
-    # En vez de .lower() que pierde las tildes y genera mismatches
     mapa_categorias = {c.nombre: c.id for c in categorias}
+    mapa_id_nombre = {c.id: c.nombre for c in categorias}
 
-    sin_cache: list[Transaction] = []
+    user_id = transacciones[0].user_id if transacciones else None
+
+    # Cargar reglas activas una sola vez
+    reglas_activas = []
+    if user_id:
+        from app.crud.reglas import get_reglas
+        reglas_activas = get_reglas(db, user_id, solo_activas=True)
+
+    sin_clasificar: list[Transaction] = []
+    clasificadas_total = 0
 
     for tx in transacciones:
         try:
-            entrada_cache = buscar_en_cache(db, tx.descripcion_original)
-            if entrada_cache:
+            # 1. Reglas manuales
+            categoria_id = _aplicar_reglas(tx.descripcion_original, reglas_activas)
+            if categoria_id is not None:
+                categoria_nombre = mapa_id_nombre.get(categoria_id, "Sin categoría")
                 _aplicar_clasificacion(
-                    db, tx,
-                    categoria_nombre=entrada_cache.categoria,
-                    comercio_limpio=entrada_cache.comercio_limpio,
-                    confianza=entrada_cache.confianza,
-                    desde_cache=True,
+                    db, tx, categoria_nombre,
+                    comercio_limpio=_limpiar_nombre(tx.descripcion_original),
+                    confianza=1.0, desde_cache=False,
+                    mapa_categorias=mapa_categorias,
+                    forzar_categoria_id=categoria_id,
+                )
+                stats["desde_reglas"] += 1
+                clasificadas_total += 1
+                continue
+
+            # 2. Caché
+            entrada = buscar_en_cache(db, tx.descripcion_original)
+            if entrada:
+                _aplicar_clasificacion(
+                    db, tx, entrada.categoria, entrada.comercio_limpio,
+                    entrada.confianza, desde_cache=True,
                     mapa_categorias=mapa_categorias,
                 )
                 stats["desde_cache"] += 1
+                clasificadas_total += 1
             else:
-                sin_cache.append(tx)
+                sin_clasificar.append(tx)
+
         except Exception as e:
-            logger.error(f"[clasificador] Error buscando caché tx.id={tx.id}: {e}")
+            logger.error(f"[clasificador] Error tx.id={tx.id}: {e}")
             stats["errores"] += 1
 
-    # Clasificar en lotes con LLM
+    if on_progreso and clasificadas_total > 0:
+        on_progreso(clasificadas_total, stats["total"])
+
+    if not sin_clasificar:
+        logger.info(f"[clasificador] Todo resuelto sin LLM: {stats}")
+        return stats
+
+    # 3. LLM para las restantes — lotes de TAMANO_LOTE_OPTIMIZADO
     try:
         llm = get_llm_provider()
     except Exception as e:
         logger.error(f"[clasificador] No se pudo obtener proveedor LLM: {e}")
-        stats["errores"] += len(sin_cache)
+        stats["errores"] += len(sin_clasificar)
         return stats
 
-    for i in range(0, len(sin_cache), TAMANO_LOTE_LLM):
-        lote = sin_cache[i:i + TAMANO_LOTE_LLM]
+    logger.info(
+        f"[clasificador] {len(sin_clasificar)} tx van a LLM "
+        f"(lotes de {TAMANO_LOTE_OPTIMIZADO})"
+    )
+
+    for i in range(0, len(sin_clasificar), TAMANO_LOTE_OPTIMIZADO):
+        lote = sin_clasificar[i:i + TAMANO_LOTE_OPTIMIZADO]
         descripciones = [tx.descripcion_original for tx in lote]
 
         try:
-            resultados = await _llamar_llm_lote(llm, descripciones, nombres_categorias)
+            prompt = construir_prompt_clasificacion(descripciones, nombres_categorias)
+            respuesta = await llm.completar(PROMPT_SISTEMA, prompt)
 
-            # Construir mapa indice → resultado
-            mapa_resultados = {r.get("indice"): r for r in resultados if "indice" in r}
+            logger.debug(f"[clasificador] Respuesta LLM lote {i//TAMANO_LOTE_OPTIMIZADO+1}: {repr(respuesta[:200])}")
 
-            for idx, tx in enumerate(lote):
-                resultado = mapa_resultados.get(idx)
-                if not resultado:
-                    logger.warning(f"[clasificador] Sin resultado LLM para índice {idx} (tx.id={tx.id})")
-                    stats["errores"] += 1
+            resultados = parsear_respuesta_compacta(respuesta, descripciones, nombres_categorias)
+
+            for resultado in resultados:
+                idx = resultado.get("indice", -1)
+                if idx < 0 or idx >= len(lote):
                     continue
 
+                tx = lote[idx]
                 categoria = resultado.get("categoria", "Sin categoría")
                 comercio = resultado.get("comercio_limpio") or tx.descripcion_original
-                confianza = float(resultado.get("confianza", 0.7))
-
-                # Validar que la categoría existe exactamente
-                if categoria not in nombres_categorias:
-                    # Intentar match case-insensitive como fallback
-                    categoria = _buscar_categoria_flexible(categoria, nombres_categorias)
+                confianza = float(resultado.get("confianza", 0.8))
 
                 try:
                     guardar_en_cache(
-                        db,
-                        descripcion=tx.descripcion_original,
-                        categoria=categoria,
-                        comercio_limpio=comercio,
-                        confianza=confianza,
-                        proveedor=llm.nombre,
+                        db, tx.descripcion_original,
+                        categoria, comercio, confianza, llm.nombre,
                     )
                     _aplicar_clasificacion(
-                        db, tx,
-                        categoria_nombre=categoria,
-                        comercio_limpio=comercio,
-                        confianza=confianza,
-                        desde_cache=False,
-                        mapa_categorias=mapa_categorias,
+                        db, tx, categoria, comercio, confianza,
+                        desde_cache=False, mapa_categorias=mapa_categorias,
                     )
                     stats["desde_llm"] += 1
+                    clasificadas_total += 1
                 except Exception as e:
-                    logger.error(f"[clasificador] Error guardando tx.id={tx.id}: {e}\n{traceback.format_exc()}")
+                    logger.error(f"[clasificador] Error guardando tx.id={tx.id}: {e}")
                     stats["errores"] += 1
 
         except Exception as e:
-            logger.error(f"[clasificador] Error en lote {i//TAMANO_LOTE_LLM + 1}: {e}\n{traceback.format_exc()}")
+            logger.error(
+                f"[clasificador] Error lote {i//TAMANO_LOTE_OPTIMIZADO+1}: "
+                f"{e}\n{traceback.format_exc()}"
+            )
             stats["errores"] += len(lote)
+            clasificadas_total += len(lote)
+
+        if on_progreso:
+            on_progreso(clasificadas_total, stats["total"])
 
     logger.info(f"[clasificador] Completado: {stats}")
     return stats
 
 
-def _buscar_categoria_flexible(categoria_llm: str, nombres: list[str]) -> str:
-    """
-    Busca una categoría ignorando mayúsculas/tildes.
-    Retorna 'Sin categoría' si no hay match.
-    """
-    import unicodedata
+def _limpiar_nombre(descripcion: str) -> str:
+    """Limpieza básica sin LLM."""
+    import re
+    texto = re.sub(r'\s*#\d+', '', descripcion)
+    texto = re.sub(r'\s+\d{4,}$', '', texto)
+    return re.sub(r'\s+', ' ', texto).strip().title()
 
-    def normalizar(s: str) -> str:
-        s = s.lower()
-        s = unicodedata.normalize("NFD", s)
-        return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
-    cat_norm = normalizar(categoria_llm)
-    for nombre in nombres:
-        if normalizar(nombre) == cat_norm:
-            return nombre
-
-    return "Sin categoría"
+def _aplicar_reglas(descripcion: str, reglas: list) -> int | None:
+    desc_lower = descripcion.lower().strip()
+    for regla in reglas:
+        patron = regla.patron.lower().strip()
+        if regla.tipo_match == "contiene" and patron in desc_lower:
+            return regla.categoria_id
+        elif regla.tipo_match == "empieza" and desc_lower.startswith(patron):
+            return regla.categoria_id
+        elif regla.tipo_match == "exacto" and desc_lower == patron:
+            return regla.categoria_id
+    return None
 
 
 def _aplicar_clasificacion(
@@ -160,69 +192,39 @@ def _aplicar_clasificacion(
     comercio_limpio: str,
     confianza: float,
     desde_cache: bool,
-    mapa_categorias: dict[str, int],
+    mapa_categorias: dict,
+    forzar_categoria_id: int | None = None,
 ) -> None:
-    """
-    Actualiza la transacción directamente con setattr + un solo commit.
-    BUGFIX 3: eliminado update_transaction() que generaba doble commit en conflicto.
-    """
-    categoria_id = mapa_categorias.get(categoria_nombre)
+    import unicodedata
 
-    # Si no hay match exacto, intentar con el nombre limpio
-    if categoria_id is None and categoria_nombre != "Sin categoría":
-        categoria_nombre_fallback = _buscar_categoria_flexible(categoria_nombre, list(mapa_categorias.keys()))
-        categoria_id = mapa_categorias.get(categoria_nombre_fallback)
+    def norm(s):
+        s = s.lower()
+        s = unicodedata.normalize("NFD", s)
+        return "".join(c for c in s if unicodedata.category(c) != "Mn")
 
-    # Actualizar todos los campos en un solo paso
+    categoria_id = forzar_categoria_id
+    if categoria_id is None:
+        categoria_id = mapa_categorias.get(categoria_nombre)
+        if categoria_id is None:
+            cat_norm = norm(categoria_nombre)
+            for nombre, cid in mapa_categorias.items():
+                if norm(nombre) == cat_norm:
+                    categoria_id = cid
+                    break
+
     tx.categoria_id = categoria_id
     tx.comercio_limpio = comercio_limpio
     tx.confianza_clasificacion = confianza
     tx.clasificado_por_cache = desde_cache
-
-    # Un solo commit para todos los cambios
     db.add(tx)
     db.commit()
     db.refresh(tx)
 
 
-async def _llamar_llm_lote(llm, descripciones: list[str], categorias: list[str]) -> list[dict]:
-    prompt_usuario = construir_prompt_clasificacion(descripciones, categorias)
-    respuesta = await llm.completar(PROMPT_SISTEMA, prompt_usuario)
-    return _parsear_respuesta(respuesta)
-
-
-def _parsear_respuesta(texto: str) -> list[dict]:
-    texto = texto.strip()
-
-    if "```" in texto:
-        match = re.search(r'```(?:json)?\s*([\s\S]*?)```', texto)
-        if match:
-            texto = match.group(1).strip()
-
-    inicio = texto.find("{")
-    fin = texto.rfind("}") + 1
-    if inicio == -1 or fin == 0:
-        raise ValueError(f"No se encontró JSON en la respuesta: {texto[:300]}")
-
-    datos = json.loads(texto[inicio:fin])
-    return datos.get("clasificaciones", [])
-
-
 async def verificar_conexion_llm() -> dict:
     try:
         llm = get_llm_provider()
-        respuesta = await llm.completar(
-            "Eres un asistente útil.",
-            "Responde solo 'OK' para confirmar que estás operativo.",
-        )
-        return {
-            "ok": True,
-            "proveedor": llm.nombre,
-            "respuesta": respuesta.strip()[:50],
-        }
+        respuesta = await llm.completar("Responde solo OK.", "OK")
+        return {"ok": True, "proveedor": llm.nombre, "respuesta": respuesta.strip()[:50]}
     except Exception as e:
-        return {
-            "ok": False,
-            "proveedor": "desconocido",
-            "error": str(e),
-        }
+        return {"ok": False, "proveedor": "desconocido", "error": str(e)}

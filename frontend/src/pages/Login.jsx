@@ -1,18 +1,36 @@
 /**
- * Página de autenticación: login y registro en una sola pantalla.
- * El primer usuario registrado se convierte automáticamente en admin.
+ * Página de autenticación: login y registro.
  */
 
 import { useState } from "react";
 import { useAuthStore } from "../store/authStore";
 
 export default function LoginPage() {
-  const [modo, setModo] = useState("login"); // "login" | "registro"
+  const [modo, setModo] = useState("login");
   const [form, setForm] = useState({ email: "", nombre: "", password: "" });
   const { login, registro, cargando, error } = useAuthStore();
 
   async function handleSubmit(e) {
     e.preventDefault();
+
+    // Validaciones en cliente antes de llamar al servidor
+    if (!form.email.includes("@")) {
+      useAuthStore.setState({ error: "Ingresa un email válido" });
+      return;
+    }
+    if (form.password.length < 6) {
+      useAuthStore.setState({ error: "La contraseña debe tener al menos 6 caracteres" });
+      return;
+    }
+    if (form.password.length > 72) {
+      useAuthStore.setState({ error: "La contraseña no puede superar 72 caracteres" });
+      return;
+    }
+    if (modo === "registro" && form.nombre.trim().length < 2) {
+      useAuthStore.setState({ error: "Ingresa tu nombre (mínimo 2 caracteres)" });
+      return;
+    }
+
     if (modo === "login") {
       await login(form.email, form.password);
     } else {
@@ -20,24 +38,15 @@ export default function LoginPage() {
     }
   }
 
-  function campo(key, placeholder, type = "text") {
-    return (
-      <input
-        type={type}
-        placeholder={placeholder}
-        value={form[key]}
-        onChange={(e) => setForm({ ...form, [key]: e.target.value })}
-        style={styles.input}
-        required
-        autoComplete={type === "password" ? "current-password" : "email"}
-      />
-    );
+  function cambiarModo(nuevoModo) {
+    setModo(nuevoModo);
+    setForm({ email: "", nombre: "", password: "" });
+    useAuthStore.setState({ error: null });
   }
 
   return (
     <div style={styles.wrapper}>
       <div style={styles.card}>
-        {/* Logo */}
         <div style={styles.logo}>💸 GastosAI</div>
         <p style={styles.tagline}>Dashboard local de gastos personales con IA</p>
 
@@ -45,14 +54,14 @@ export default function LoginPage() {
         <div style={styles.tabs}>
           <button
             style={{ ...styles.tab, ...(modo === "login" ? styles.tabActivo : {}) }}
-            onClick={() => setModo("login")}
+            onClick={() => cambiarModo("login")}
             type="button"
           >
             Iniciar sesión
           </button>
           <button
             style={{ ...styles.tab, ...(modo === "registro" ? styles.tabActivo : {}) }}
-            onClick={() => setModo("registro")}
+            onClick={() => cambiarModo("registro")}
             type="button"
           >
             Crear cuenta
@@ -61,11 +70,53 @@ export default function LoginPage() {
 
         {/* Formulario */}
         <form onSubmit={handleSubmit} style={styles.form}>
-          {campo("email", "Email", "email")}
-          {modo === "registro" && campo("nombre", "Tu nombre")}
-          {campo("password", "Contraseña", "password")}
+          <div style={styles.campoWrapper}>
+            <label style={styles.label}>Email</label>
+            <input
+              type="email"
+              placeholder="tu@email.com"
+              value={form.email}
+              onChange={(e) => setForm({ ...form, email: e.target.value })}
+              style={styles.input}
+              required
+              autoComplete="email"
+            />
+          </div>
 
-          {error && <div style={styles.errorBox}>{error}</div>}
+          {modo === "registro" && (
+            <div style={styles.campoWrapper}>
+              <label style={styles.label}>Nombre</label>
+              <input
+                type="text"
+                placeholder="Tu nombre"
+                value={form.nombre}
+                onChange={(e) => setForm({ ...form, nombre: e.target.value })}
+                style={styles.input}
+                required
+                autoComplete="name"
+              />
+            </div>
+          )}
+
+          <div style={styles.campoWrapper}>
+            <label style={styles.label}>Contraseña</label>
+            <input
+              type="password"
+              placeholder={modo === "registro" ? "Mínimo 6 caracteres" : "Tu contraseña"}
+              value={form.password}
+              onChange={(e) => setForm({ ...form, password: e.target.value })}
+              style={styles.input}
+              required
+              autoComplete={modo === "login" ? "current-password" : "new-password"}
+            />
+          </div>
+
+          {/* Error del servidor o validación cliente */}
+          {error && (
+            <div style={styles.errorBox}>
+              ⚠️ {error}
+            </div>
+          )}
 
           <button
             type="submit"
@@ -78,17 +129,16 @@ export default function LoginPage() {
           </button>
         </form>
 
-        {/* Info registro */}
         {modo === "registro" && (
-          <p style={styles.infoRegistro}>
-            El primer usuario registrado será administrador del sistema.
+          <p style={styles.infoBox}>
+            El primer usuario registrado será administrador.
             Los datos de cada usuario son completamente independientes.
           </p>
         )}
 
         {modo === "login" && (
-          <p style={styles.infoRegistro}>
-            ¿Primera vez? Crea una cuenta para empezar.
+          <p style={styles.infoBox}>
+            ¿Primera vez? Haz clic en <strong>Crear cuenta</strong>.
           </p>
         )}
       </div>
@@ -98,98 +148,50 @@ export default function LoginPage() {
 
 const styles = {
   wrapper: {
-    minHeight: "100vh",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "var(--bg-tertiary)",
-    padding: 20,
+    minHeight: "100vh", display: "flex", alignItems: "center",
+    justifyContent: "center", backgroundColor: "var(--bg-tertiary)", padding: 20,
   },
   card: {
-    backgroundColor: "var(--bg-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-xl)",
-    padding: "36px 40px",
-    width: "100%",
-    maxWidth: 400,
+    backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
+    borderRadius: "var(--radius-xl)", padding: "36px 40px", width: "100%", maxWidth: 400,
   },
-  logo: {
-    fontSize: 24,
-    fontWeight: 600,
-    marginBottom: 6,
-    textAlign: "center",
-    color: "var(--text-primary)",
-  },
-  tagline: {
-    fontSize: 13,
-    color: "var(--text-tertiary)",
-    textAlign: "center",
-    marginBottom: 28,
-  },
+  logo: { fontSize: 24, fontWeight: 600, marginBottom: 6, textAlign: "center" },
+  tagline: { fontSize: 13, color: "var(--text-tertiary)", textAlign: "center", marginBottom: 28 },
   tabs: {
-    display: "flex",
-    backgroundColor: "var(--bg-secondary)",
-    borderRadius: "var(--radius-md)",
-    padding: 3,
-    marginBottom: 24,
+    display: "flex", backgroundColor: "var(--bg-secondary)",
+    borderRadius: "var(--radius-md)", padding: 3, marginBottom: 24,
   },
   tab: {
-    flex: 1,
-    padding: "7px 0",
-    fontSize: 13,
-    fontWeight: 500,
-    border: "none",
-    borderRadius: "var(--radius-sm)",
-    cursor: "pointer",
-    backgroundColor: "transparent",
-    color: "var(--text-secondary)",
+    flex: 1, padding: "7px 0", fontSize: 13, fontWeight: 500, border: "none",
+    borderRadius: "var(--radius-sm)", cursor: "pointer",
+    backgroundColor: "transparent", color: "var(--text-secondary)",
     transition: "all 0.15s ease",
   },
   tabActivo: {
-    backgroundColor: "var(--bg-primary)",
-    color: "var(--text-primary)",
+    backgroundColor: "var(--bg-primary)", color: "var(--text-primary)",
     boxShadow: "0 1px 3px rgba(0,0,0,0.1)",
   },
-  form: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
+  form: { display: "flex", flexDirection: "column", gap: 14 },
+  campoWrapper: { display: "flex", flexDirection: "column", gap: 5 },
+  label: { fontSize: 12, fontWeight: 500, color: "var(--text-secondary)" },
   input: {
-    width: "100%",
-    padding: "10px 14px",
-    fontSize: 14,
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-md)",
-    backgroundColor: "var(--bg-secondary)",
-    color: "var(--text-primary)",
-    outline: "none",
-    boxSizing: "border-box",
+    width: "100%", padding: "10px 14px", fontSize: 14,
+    border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)",
+    backgroundColor: "var(--bg-secondary)", color: "var(--text-primary)",
+    outline: "none", boxSizing: "border-box",
   },
   errorBox: {
-    backgroundColor: "var(--danger-light)",
-    color: "var(--danger)",
-    borderRadius: "var(--radius-md)",
-    padding: "10px 14px",
-    fontSize: 13,
+    backgroundColor: "var(--danger-light)", color: "var(--danger)",
+    borderRadius: "var(--radius-md)", padding: "10px 14px",
+    fontSize: 13, lineHeight: 1.5,
   },
   btnSubmit: {
-    width: "100%",
-    padding: "11px 0",
-    fontSize: 14,
-    fontWeight: 600,
-    backgroundColor: "var(--accent)",
-    color: "white",
-    border: "none",
-    borderRadius: "var(--radius-md)",
-    cursor: "pointer",
-    marginTop: 4,
+    width: "100%", padding: "11px 0", fontSize: 14, fontWeight: 600,
+    backgroundColor: "var(--accent)", color: "white", border: "none",
+    borderRadius: "var(--radius-md)", cursor: "pointer", marginTop: 4,
   },
-  infoRegistro: {
-    fontSize: 12,
-    color: "var(--text-tertiary)",
-    textAlign: "center",
-    marginTop: 16,
-    lineHeight: 1.6,
+  infoBox: {
+    fontSize: 12, color: "var(--text-tertiary)", textAlign: "center",
+    marginTop: 16, lineHeight: 1.6,
   },
 };

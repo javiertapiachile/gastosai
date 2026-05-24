@@ -1,9 +1,4 @@
-"""
-Servicio de autenticación local.
-- Passwords hasheados con bcrypt
-- Tokens JWT firmados con secret local
-- Sin servicios externos, sin email de verificación
-"""
+"""Servicio de autenticación local con instalación de reglas al registrar."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -15,13 +10,11 @@ from sqlalchemy.orm import Session
 
 from app.models.user import User
 
-# Contexto de hashing — bcrypt es el estándar para passwords
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# Secret key para firmar JWT — generado automáticamente si no existe en env
 JWT_SECRET = os.environ.get("JWT_SECRET", "gastosai-local-secret-cambia-esto-en-produccion")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRE_DAYS = 30  # Tokens de larga duración para uso local
+JWT_EXPIRE_DAYS = 30
 
 
 def hashear_password(password: str) -> str:
@@ -33,7 +26,6 @@ def verificar_password(password_plano: str, hashed: str) -> bool:
 
 
 def crear_token(user_id: int, email: str) -> str:
-    """Crea un JWT con expiración de 30 días."""
     payload = {
         "sub": str(user_id),
         "email": email,
@@ -44,7 +36,6 @@ def crear_token(user_id: int, email: str) -> str:
 
 
 def verificar_token(token: str) -> Optional[dict]:
-    """Decodifica y valida un JWT. Retorna el payload o None si es inválido."""
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
     except JWTError:
@@ -52,7 +43,6 @@ def verificar_token(token: str) -> Optional[dict]:
 
 
 def autenticar_usuario(db: Session, email: str, password: str) -> Optional[User]:
-    """Busca el usuario y verifica la contraseña. Retorna el usuario o None."""
     usuario = db.query(User).filter(User.email == email.lower()).first()
     if not usuario:
         return None
@@ -60,7 +50,6 @@ def autenticar_usuario(db: Session, email: str, password: str) -> Optional[User]
         return None
     if not usuario.activo:
         return None
-    # Registrar último login
     usuario.ultimo_login = datetime.now(timezone.utc)
     db.commit()
     return usuario
@@ -73,7 +62,6 @@ def registrar_usuario(
     password: str,
     es_admin: bool = False,
 ) -> User:
-    """Crea un nuevo usuario. Lanza ValueError si el email ya existe."""
     existente = db.query(User).filter(User.email == email.lower()).first()
     if existente:
         raise ValueError(f"Ya existe una cuenta con el email {email}")
@@ -87,6 +75,19 @@ def registrar_usuario(
     db.add(usuario)
     db.commit()
     db.refresh(usuario)
+
+    # Instalar reglas de clasificación por defecto
+    try:
+        from app.services.reglas_updater import instalar_reglas_usuario
+        n = instalar_reglas_usuario(db, usuario.id)
+        import logging
+        logging.getLogger(__name__).info(
+            f"[auth] {n} reglas instaladas para usuario {usuario.email}"
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[auth] Error instalando reglas: {e}")
+
     return usuario
 
 

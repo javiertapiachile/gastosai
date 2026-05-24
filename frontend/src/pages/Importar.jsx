@@ -1,6 +1,6 @@
 /**
- * Página de importación con subida por lote, progreso individual,
- * reclasificación y eliminación de archivos.
+ * Página de importación con progreso real, historial paginado,
+ * reclasificación y eliminación.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -22,18 +22,28 @@ const ESTADOS_COLOR = {
   error:        "var(--danger)",
 };
 
+const POR_PAGINA = 10;
+
 function FilaProgreso({ batch, onEliminar, onReclasificar, accionando }) {
   const color = ESTADOS_COLOR[batch.estado];
-  const enProgreso = ["pendiente", "procesando", "clasificando"].includes(batch.estado);
+  const enClasificando = batch.estado === "clasificando";
+  const enProcesando = batch.estado === "procesando";
   const completado = batch.estado === "completado";
   const conError = batch.estado === "error";
+
+  // Progreso real: durante clasificación usamos transacciones_procesadas/total
+  const pct = completado ? 100
+    : enClasificando && batch.total_transacciones > 0
+      ? Math.round((batch.transacciones_procesadas / batch.total_transacciones) * 100)
+    : enProcesando ? Math.round(batch.progreso)
+    : 0;
 
   return (
     <div style={styles.filaProgreso}>
       <div style={styles.filaTop}>
         <span style={styles.filaNombre} title={batch.nombre_archivo}>
-          {batch.nombre_archivo.length > 35
-            ? batch.nombre_archivo.slice(0, 32) + "..."
+          {batch.nombre_archivo.length > 38
+            ? batch.nombre_archivo.slice(0, 35) + "..."
             : batch.nombre_archivo}
         </span>
         <span style={{ color, fontSize: 12, fontWeight: 500, whiteSpace: "nowrap" }}>
@@ -41,51 +51,41 @@ function FilaProgreso({ batch, onEliminar, onReclasificar, accionando }) {
         </span>
       </div>
 
-      {/* Barra de progreso */}
       <div style={styles.barraTrack}>
         <div style={{
           ...styles.barraFill,
-          width: completado ? "100%" : enProgreso ? "100%" : `${batch.progreso}%`,
+          width: `${pct}%`,
           backgroundColor: color,
-          opacity: enProgreso && batch.estado !== "procesando" ? 0.7 : 1,
-          backgroundImage: batch.estado === "clasificando"
-            ? "repeating-linear-gradient(90deg, transparent, transparent 10px, rgba(255,255,255,0.2) 10px, rgba(255,255,255,0.2) 20px)"
-            : "none",
-          transition: "width 0.4s ease",
+          transition: "width 0.6s ease",
         }} />
       </div>
 
       <div style={styles.filaBottom}>
-        {completado && (
-          <span style={{ color: "var(--success)", fontSize: 11 }}>
-            ✓ {batch.total_transacciones} transacciones
-          </span>
-        )}
-        {conError && (
-          <span style={{ color: "var(--danger)", fontSize: 11 }} title={batch.mensaje_error}>
-            ✗ {(batch.mensaje_error || "Error desconocido").slice(0, 60)}
-          </span>
-        )}
-        {enProgreso && (
-          <span style={{ color: "var(--text-tertiary)", fontSize: 11 }}>
-            {batch.estado === "clasificando"
-              ? "Esto puede tomar varios minutos..."
-              : `${batch.transacciones_procesadas}/${batch.total_transacciones || "?"}`}
-          </span>
-        )}
-
+        <span style={{ fontSize: 11, color: "var(--text-tertiary)" }}>
+          {completado && `✓ ${batch.total_transacciones} transacciones`}
+          {conError && (
+            <span>
+              ✗ {(batch.mensaje_error || "Error").slice(0, 55)}
+              {batch.total_transacciones === 0 && " — presiona 🔄 para reprocesar"}
+            </span>
+          )}
+          {enClasificando && batch.total_transacciones > 0 &&
+            `${batch.transacciones_procesadas} / ${batch.total_transacciones} clasificadas · ${pct}%`}
+          {enClasificando && batch.total_transacciones === 0 && "Iniciando clasificación..."}
+          {enProcesando && `Parseando... ${pct}%`}
+        </span>
         <div style={styles.filaBotones}>
           <button
             style={{ ...styles.btnIcono, opacity: accionando ? 0.4 : 1 }}
             onClick={() => onReclasificar(batch.id)}
             disabled={!!accionando}
-            title="Reclasificar con IA"
+            title={batch.total_transacciones === 0 ? "Reprocesar archivo completo" : "Reclasificar con IA"}
           >🔄</button>
           <button
             style={{ ...styles.btnIcono, ...styles.btnEliminar, opacity: accionando ? 0.4 : 1 }}
             onClick={() => onEliminar(batch)}
             disabled={!!accionando}
-            title="Eliminar archivo y transacciones"
+            title="Eliminar"
           >🗑️</button>
         </div>
       </div>
@@ -96,22 +96,28 @@ function FilaProgreso({ batch, onEliminar, onReclasificar, accionando }) {
 export default function ImportarPage() {
   const [arrastrandoSobre, setArrastrandoSobre] = useState(false);
   const [subiendo, setSubiendo] = useState(false);
-  const [batchesActivos, setBatchesActivos] = useState([]); // batches en progreso
+  const [batchesActivos, setBatchesActivos] = useState([]);
   const [historial, setHistorial] = useState([]);
+  const [totalHistorial, setTotalHistorial] = useState(0);
+  const [pagina, setPagina] = useState(1);
   const [error, setError] = useState(null);
   const [accionando, setAccionando] = useState(null);
   const inputRef = useRef(null);
   const pollingRef = useRef(null);
 
   useEffect(() => {
-    cargarHistorial();
+    cargarHistorial(pagina);
     return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
-  }, []);
+  }, [pagina]);
 
-  async function cargarHistorial() {
+  async function cargarHistorial(pag = 1) {
     try {
-      const { data } = await client.get("/uploads/");
-      setHistorial(data);
+      const [{ data: items }, { data: meta }] = await Promise.all([
+        client.get("/uploads/", { params: { pagina: pag, por_pagina: POR_PAGINA } }),
+        client.get("/uploads/meta"),
+      ]);
+      setHistorial(items);
+      setTotalHistorial(meta.total);
     } catch { /* silencioso */ }
   }
 
@@ -120,14 +126,12 @@ export default function ImportarPage() {
 
     pollingRef.current = setInterval(async () => {
       try {
-        // Hacer polling de todos los batches activos en paralelo
-        const resultados = await Promise.all(
-          batchIds.map(id => client.get(`/uploads/${id}`).then(r => r.data))
-        );
+        // Una sola llamada para todos los batches activos
+        const ids = batchIds.join(",");
+        const { data: resultados } = await client.get(`/uploads/bulk/estado?ids=${ids}`);
 
         setBatchesActivos(resultados);
 
-        // Si todos terminaron, detener polling y recargar historial
         const todosTerminaron = resultados.every(
           b => b.estado === "completado" || b.estado === "error"
         );
@@ -137,27 +141,26 @@ export default function ImportarPage() {
           setSubiendo(false);
           setTimeout(() => {
             setBatchesActivos([]);
-            cargarHistorial();
+            cargarHistorial(1);
+            setPagina(1);
           }, 2000);
         }
       } catch {
         clearInterval(pollingRef.current);
         setSubiendo(false);
       }
-    }, 2000);
+    }, 1500);
   }
 
   async function subirArchivos(archivos) {
     setError(null);
-
-    // Validar cada archivo en el cliente
     const validos = [];
     const rechazados = [];
 
     for (const archivo of archivos) {
       const ext = archivo.name.split(".").pop().toLowerCase();
       if (!["csv", "xlsx", "pdf"].includes(ext)) {
-        rechazados.push(`${archivo.name}: formato .${ext} no soportado`);
+        rechazados.push(`${archivo.name}: formato no soportado`);
       } else if (archivo.size > 50 * 1024 * 1024) {
         rechazados.push(`${archivo.name}: supera 50 MB`);
       } else {
@@ -165,34 +168,23 @@ export default function ImportarPage() {
       }
     }
 
-    if (rechazados.length > 0) {
-      setError(`Archivos ignorados: ${rechazados.join(" · ")}`);
-    }
-
+    if (rechazados.length > 0) setError(`Ignorados: ${rechazados.join(" · ")}`);
     if (validos.length === 0) return;
 
     setSubiendo(true);
-
     const formData = new FormData();
-    for (const archivo of validos) {
-      formData.append("files", archivo);
-    }
 
     try {
-      const endpoint = validos.length === 1 ? "/uploads/" : "/uploads/lote";
-
       let batches;
       if (validos.length === 1) {
-        // Endpoint original para 1 archivo
-        formData.delete("files");
         formData.append("file", validos[0]);
-        const { data } = await client.post(endpoint, formData, {
+        const { data } = await client.post("/uploads/", formData, {
           headers: { "Content-Type": "multipart/form-data" },
         });
         batches = [data];
       } else {
-        // Endpoint de lote para múltiples
-        const { data } = await client.post(endpoint, formData, {
+        validos.forEach(f => formData.append("files", f));
+        const { data } = await client.post("/uploads/lote", formData, {
           headers: { "Content-Type": "multipart/form-data" },
         });
         batches = data;
@@ -201,7 +193,7 @@ export default function ImportarPage() {
       setBatchesActivos(batches);
       iniciarPollingLote(batches.map(b => b.id));
     } catch (err) {
-      setError(err.response?.data?.detail || "Error al subir los archivos");
+      setError(err.response?.data?.detail || "Error al subir");
       setSubiendo(false);
     }
   }
@@ -222,13 +214,13 @@ export default function ImportarPage() {
 
   async function eliminar(batch) {
     if (!confirm(
-      `¿Eliminar "${batch.nombre_archivo}"?\n\nSe borrarán también las ${batch.total_transacciones} transacciones asociadas.`
+      `¿Eliminar "${batch.nombre_archivo}"?\n\nSe borrarán las ${batch.total_transacciones} transacciones asociadas.`
     )) return;
 
     setAccionando(batch.id);
     try {
       await client.delete(`/uploads/${batch.id}`);
-      setHistorial(h => h.filter(x => x.id !== batch.id));
+      cargarHistorial(pagina);
     } catch (err) {
       setError(err.response?.data?.detail || "Error al eliminar");
     } finally {
@@ -243,27 +235,16 @@ export default function ImportarPage() {
     if (archivos.length > 0) subirArchivos(archivos);
   }, []);
 
-  const onChangeInput = (e) => {
-    const archivos = Array.from(e.target.files);
-    if (archivos.length > 0) subirArchivos(archivos);
-    e.target.value = "";
-  };
+  const totalPaginas = Math.ceil(totalHistorial / POR_PAGINA);
 
   return (
     <div style={styles.wrapper}>
-      <style>{`
-        @keyframes stripe {
-          0% { background-position: 0 0; }
-          100% { background-position: 40px 0; }
-        }
-      `}</style>
-
       <h1 style={styles.titulo}>Importar extractos</h1>
       <p style={styles.subtitulo}>
-        Arrastra uno o varios archivos a la vez. GastosAI procesará cada uno automáticamente.
+        Arrastra uno o varios archivos. GastosAI clasificará cada transacción automáticamente.
       </p>
 
-      {/* Zona de drop */}
+      {/* Drop zone */}
       <div
         style={{
           ...styles.dropZone,
@@ -275,25 +256,21 @@ export default function ImportarPage() {
         onDragLeave={() => setArrastrandoSobre(false)}
       >
         <div style={styles.dropIcono}>{subiendo ? "⏳" : "📂"}</div>
-        <p style={styles.dropTitulo}>
-          {subiendo ? "Procesando archivos..." : "Arrastra tus extractos aquí"}
-        </p>
-        <p style={styles.dropSub}>
-          CSV · XLSX · PDF — hasta 50 MB por archivo · múltiples archivos a la vez
-        </p>
-
+        <p style={styles.dropTitulo}>{subiendo ? "Procesando..." : "Arrastra tus extractos aquí"}</p>
+        <p style={styles.dropSub}>CSV · XLSX · PDF — hasta 50 MB · múltiples archivos</p>
         {!subiendo && (
           <>
             <button style={styles.botonSeleccionar} onClick={() => inputRef.current?.click()}>
               Seleccionar archivos
             </button>
             <input
-              ref={inputRef}
-              type="file"
-              accept=".csv,.xlsx,.pdf"
-              multiple
+              ref={inputRef} type="file" accept=".csv,.xlsx,.pdf" multiple
               style={{ display: "none" }}
-              onChange={onChangeInput}
+              onChange={(e) => {
+                const f = Array.from(e.target.files);
+                if (f.length > 0) subirArchivos(f);
+                e.target.value = "";
+              }}
             />
           </>
         )}
@@ -301,14 +278,14 @@ export default function ImportarPage() {
 
       {error && <div style={styles.errorBox}>⚠️ {error}</div>}
 
-      {/* Progreso de batches activos */}
+      {/* Batches activos con progreso */}
       {batchesActivos.length > 0 && (
         <div style={styles.loteBox}>
           <div style={styles.loteHeader}>
             <span style={styles.loteTitulo}>
               Procesando {batchesActivos.length} {batchesActivos.length === 1 ? "archivo" : "archivos"}
             </span>
-            <span style={styles.loteResumen}>
+            <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
               {batchesActivos.filter(b => b.estado === "completado").length} completados
             </span>
           </div>
@@ -324,13 +301,13 @@ export default function ImportarPage() {
         </div>
       )}
 
-      {/* Historial */}
-      {historial.length > 0 && (
+      {/* Historial paginado */}
+      {(historial.length > 0 || totalHistorial > 0) && (
         <div style={styles.historialBox}>
           <div style={styles.historialHeader}>
             <h2 style={styles.historialTitulo}>Historial de importaciones</h2>
-            <span style={styles.historialCount}>
-              {historial.length} archivos · {historial.reduce((s, h) => s + h.total_transacciones, 0)} transacciones
+            <span style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+              {totalHistorial} archivos · {historial.reduce((s, h) => s + (h.total_transacciones || 0), 0)} tx en esta página
             </span>
           </div>
 
@@ -345,9 +322,12 @@ export default function ImportarPage() {
                 </span>
               </div>
               <div style={styles.historialRight}>
-                <span style={styles.historialTx}>{h.total_transacciones} tx</span>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", minWidth: 40, textAlign: "right" }}>
+                  {h.total_transacciones} tx
+                </span>
                 <span style={{
-                  ...styles.estadoBadge,
+                  fontSize: 11, fontWeight: 500, padding: "2px 8px",
+                  borderRadius: "var(--radius-full)", whiteSpace: "nowrap",
                   color: ESTADOS_COLOR[h.estado],
                   backgroundColor: `${ESTADOS_COLOR[h.estado]}18`,
                 }}>
@@ -357,7 +337,7 @@ export default function ImportarPage() {
                   style={{ ...styles.btnIcono, opacity: accionando === h.id ? 0.4 : 1 }}
                   onClick={() => reclasificar(h.id)}
                   disabled={accionando === h.id}
-                  title="Reclasificar con IA"
+                  title={h.total_transacciones === 0 ? "Reprocesar archivo" : "Reclasificar con IA"}
                 >🔄</button>
                 <button
                   style={{ ...styles.btnIcono, ...styles.btnEliminar, opacity: accionando === h.id ? 0.4 : 1 }}
@@ -368,12 +348,31 @@ export default function ImportarPage() {
               </div>
             </div>
           ))}
+
+          {/* Paginación */}
+          {totalPaginas > 1 && (
+            <div style={styles.paginacion}>
+              <button
+                style={styles.btnPag}
+                disabled={pagina <= 1}
+                onClick={() => setPagina(p => p - 1)}
+              >← Anterior</button>
+              <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+                {pagina} / {totalPaginas}
+              </span>
+              <button
+                style={styles.btnPag}
+                disabled={pagina >= totalPaginas}
+                onClick={() => setPagina(p => p + 1)}
+              >Siguiente →</button>
+            </div>
+          )}
         </div>
       )}
 
-      {historial.length === 0 && !subiendo && (
-        <div style={styles.vacio}>
-          Aún no has importado ningún extracto. Sube tu primer archivo arriba.
+      {historial.length === 0 && !subiendo && totalHistorial === 0 && (
+        <div style={{ textAlign: "center", padding: 32, color: "var(--text-tertiary)", fontSize: 13 }}>
+          Aún no has importado ningún extracto.
         </div>
       )}
     </div>
@@ -384,34 +383,24 @@ const styles = {
   wrapper: { maxWidth: 720, margin: "0 auto" },
   titulo: { fontSize: 22, fontWeight: 600, marginBottom: 8 },
   subtitulo: { color: "var(--text-secondary)", marginBottom: 28, fontSize: 14 },
-
   dropZone: {
-    border: "2px dashed var(--border-strong)",
-    borderRadius: "var(--radius-xl)",
-    padding: "40px 32px",
-    textAlign: "center",
-    cursor: "pointer",
-    transition: "all 0.2s ease",
-    backgroundColor: "var(--bg-primary)",
-    marginBottom: 20,
+    border: "2px dashed var(--border-strong)", borderRadius: "var(--radius-xl)",
+    padding: "40px 32px", textAlign: "center", cursor: "pointer",
+    transition: "all 0.2s ease", backgroundColor: "var(--bg-primary)", marginBottom: 20,
   },
   dropZoneActiva: { borderColor: "var(--accent)", backgroundColor: "var(--accent-light)" },
   dropZoneSubiendo: { cursor: "default", opacity: 0.8 },
   dropIcono: { fontSize: 36, marginBottom: 12 },
-  dropTitulo: { fontSize: 15, fontWeight: 600, marginBottom: 6, color: "var(--text-primary)" },
+  dropTitulo: { fontSize: 15, fontWeight: 600, marginBottom: 6 },
   dropSub: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 20 },
   botonSeleccionar: {
     backgroundColor: "var(--accent)", color: "white", border: "none",
-    borderRadius: "var(--radius-md)", padding: "9px 20px",
-    fontSize: 13, fontWeight: 500, cursor: "pointer",
+    borderRadius: "var(--radius-md)", padding: "9px 20px", fontSize: 13, fontWeight: 500, cursor: "pointer",
   },
-
   errorBox: {
     backgroundColor: "var(--danger-light)", color: "var(--danger)",
-    borderRadius: "var(--radius-md)", padding: "12px 16px",
-    fontSize: 13, marginBottom: 16,
+    borderRadius: "var(--radius-md)", padding: "12px 16px", fontSize: 13, marginBottom: 16,
   },
-
   loteBox: {
     backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
     borderRadius: "var(--radius-lg)", overflow: "hidden", marginBottom: 20,
@@ -421,23 +410,17 @@ const styles = {
     padding: "12px 16px", borderBottom: "1px solid var(--border-default)",
     backgroundColor: "var(--bg-secondary)",
   },
-  loteTitulo: { fontSize: 13, fontWeight: 600, color: "var(--text-primary)" },
-  loteResumen: { fontSize: 12, color: "var(--text-tertiary)" },
-
-  filaProgreso: {
-    padding: "12px 16px",
-    borderBottom: "1px solid var(--border-default)",
-  },
+  loteTitulo: { fontSize: 13, fontWeight: 600 },
+  filaProgreso: { padding: "12px 16px", borderBottom: "1px solid var(--border-default)" },
   filaTop: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 },
-  filaNombre: { fontSize: 13, fontWeight: 500, color: "var(--text-primary)" },
+  filaNombre: { fontSize: 13, fontWeight: 500 },
   barraTrack: {
-    height: 4, backgroundColor: "var(--bg-secondary)",
-    borderRadius: "var(--radius-full)", overflow: "hidden", marginBottom: 6,
+    height: 5, backgroundColor: "var(--bg-secondary)",
+    borderRadius: "var(--radius-full)", overflow: "hidden", marginBottom: 5,
   },
-  barraFill: { height: "100%", borderRadius: "var(--radius-full)", transition: "width 0.4s ease" },
+  barraFill: { height: "100%", borderRadius: "var(--radius-full)" },
   filaBottom: { display: "flex", justifyContent: "space-between", alignItems: "center" },
   filaBotones: { display: "flex", gap: 4 },
-
   historialBox: {
     backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
     borderRadius: "var(--radius-lg)", overflow: "hidden",
@@ -447,28 +430,26 @@ const styles = {
     padding: "12px 20px", borderBottom: "1px solid var(--border-default)",
   },
   historialTitulo: { fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" },
-  historialCount: { fontSize: 12, color: "var(--text-tertiary)" },
   historialItem: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
     padding: "11px 20px", borderBottom: "1px solid var(--border-default)",
   },
   historialLeft: { display: "flex", flexDirection: "column", gap: 3 },
-  historialNombre: { fontSize: 13, fontWeight: 500, color: "var(--text-primary)" },
+  historialNombre: { fontSize: 13, fontWeight: 500 },
   historialFecha: { fontSize: 11, color: "var(--text-tertiary)" },
   historialRight: { display: "flex", alignItems: "center", gap: 8 },
-  historialTx: { fontSize: 12, color: "var(--text-secondary)", minWidth: 40, textAlign: "right" },
-  estadoBadge: {
-    fontSize: 11, fontWeight: 500, padding: "2px 8px",
-    borderRadius: "var(--radius-full)", whiteSpace: "nowrap",
-  },
   btnIcono: {
     background: "none", border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-sm)", padding: "3px 7px",
-    cursor: "pointer", fontSize: 13, lineHeight: 1,
+    borderRadius: "var(--radius-sm)", padding: "3px 7px", cursor: "pointer", fontSize: 13,
   },
   btnEliminar: { borderColor: "var(--danger-light)" },
-  vacio: {
-    textAlign: "center", padding: "32px",
-    color: "var(--text-tertiary)", fontSize: 13,
+  paginacion: {
+    display: "flex", justifyContent: "center", alignItems: "center",
+    gap: 16, padding: "12px 20px",
+  },
+  btnPag: {
+    fontSize: 13, border: "1px solid var(--border-default)", borderRadius: "var(--radius-md)",
+    padding: "5px 14px", cursor: "pointer", backgroundColor: "var(--bg-secondary)",
+    color: "var(--text-secondary)",
   },
 };

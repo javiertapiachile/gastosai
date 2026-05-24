@@ -21,6 +21,8 @@ class UploadBatch(Base):
     id = Column(Integer, primary_key=True, index=True)
     nombre_archivo = Column(String(255), nullable=False)
     tipo_archivo = Column(String(10), nullable=False)
+    ruta_archivo = Column(String(500), nullable=True)
+    hash_contenido = Column(String(64), nullable=True, index=True)  # SHA-256 para deduplicación
     estado = Column(Enum(BatchStatus), default=BatchStatus.pendiente, nullable=False)
     total_transacciones = Column(Integer, default=0)
     transacciones_procesadas = Column(Integer, default=0)
@@ -29,10 +31,8 @@ class UploadBatch(Base):
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
     completado_en = Column(DateTime(timezone=True), nullable=True)
 
-    # Usuario propietario
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     usuario = relationship("User", back_populates="batches")
-
     transacciones = relationship("Transaction", back_populates="batch")
 
     def __repr__(self) -> str:
