@@ -1,5 +1,5 @@
 /**
- * Raíz de la aplicación React con rutas principales.
+ * Raíz de la aplicación React — rutas principales completas.
  */
 
 import { BrowserRouter, Routes, Route } from "react-router-dom";
@@ -7,7 +7,7 @@ import Layout from "./components/Layout";
 import DashboardPage from "./pages/Dashboard";
 import ImportarPage from "./pages/Importar";
 import TransaccionesPage from "./pages/Transacciones";
-import { ConfiguracionPage } from "./pages/index";
+import ConfiguracionPage from "./pages/Settings";
 
 export default function App() {
   return (

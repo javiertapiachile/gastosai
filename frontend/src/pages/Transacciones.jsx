@@ -1,13 +1,13 @@
 /**
- * Página de transacciones — tabla paginada con búsqueda y filtros.
+ * Página de transacciones — tabla paginada con búsqueda, filtros y exportación.
  */
 
-import { useState, useCallback } from "react";
+import { useState } from "react";
 import { useFetch } from "../hooks/useFetch";
 import { useFiltersStore } from "../store/filtersStore";
 import TransactionTable from "../components/TransactionTable";
 import MonthPicker from "../components/MonthPicker";
-import client from "../api/client";
+import ExportButton from "../components/ExportButton";
 
 export default function TransaccionesPage() {
   const { mes, anio, setFiltros } = useFiltersStore();
@@ -20,7 +20,6 @@ export default function TransaccionesPage() {
 
   const POR_PAGINA = 50;
 
-  // Construir parámetros de la query
   const params = { pagina, por_pagina: POR_PAGINA };
   if (mes) params.mes = mes;
   if (anio) params.anio = anio;
@@ -28,7 +27,7 @@ export default function TransaccionesPage() {
   if (categoriaId) params.categoria_id = categoriaId;
   if (soloCargas !== null) params.solo_cargos = soloCargas;
 
-  const { data: resultado, loading, refetch } = useFetch(
+  const { data: resultado, loading } = useFetch(
     "/transactions/",
     { ...params, _r: recargar }
   );
@@ -45,29 +44,6 @@ export default function TransaccionesPage() {
     setPagina(1);
   }
 
-  function handleCategoriaChange(e) {
-    setCategoriaId(e.target.value ? Number(e.target.value) : null);
-    setPagina(1);
-  }
-
-  async function exportarCSV() {
-    const exportParams = new URLSearchParams();
-    if (mes) exportParams.set("mes", mes);
-    if (anio) exportParams.set("anio", anio);
-    if (busqueda) exportParams.set("busqueda", busqueda);
-    if (categoriaId) exportParams.set("categoria_id", categoriaId);
-
-    try {
-      const { data } = await client.get(`/transactions/?por_pagina=10000&pagina=1&${exportParams}`, {
-        responseType: "blob",
-      });
-      // Convertir a CSV manualmente desde los datos
-      window.open(`http://localhost:8000/api/v1/transactions/?por_pagina=10000&${exportParams}`, "_blank");
-    } catch (err) {
-      console.error("Error exportando:", err);
-    }
-  }
-
   const totalPaginas = resultado?.total_paginas ?? 0;
   const total = resultado?.total ?? 0;
 
@@ -81,11 +57,11 @@ export default function TransaccionesPage() {
             {total > 0 ? `${total} transacciones encontradas` : "Sin resultados"}
           </p>
         </div>
+        <ExportButton mes={mes} anio={anio} categoriaId={categoriaId} />
       </div>
 
       {/* Barra de filtros */}
       <div style={styles.filtrosBar}>
-        {/* Búsqueda */}
         <form onSubmit={handleBuscar} style={styles.busquedaForm}>
           <input
             type="text"
@@ -97,15 +73,16 @@ export default function TransaccionesPage() {
           <button type="submit" style={styles.btnBuscar}>Buscar</button>
         </form>
 
-        {/* Filtro categoría */}
-        <select style={styles.select} value={categoriaId ?? ""} onChange={handleCategoriaChange}>
+        <select style={styles.select} value={categoriaId ?? ""} onChange={(e) => {
+          setCategoriaId(e.target.value ? Number(e.target.value) : null);
+          setPagina(1);
+        }}>
           <option value="">Todas las categorías</option>
           {(categorias || []).map((c) => (
             <option key={c.id} value={c.id}>{c.nombre}</option>
           ))}
         </select>
 
-        {/* Filtro tipo */}
         <select
           style={styles.select}
           value={soloCargas === null ? "" : soloCargas.toString()}
@@ -119,7 +96,6 @@ export default function TransaccionesPage() {
           <option value="false">Solo abonos</option>
         </select>
 
-        {/* Período */}
         <MonthPicker mes={mes} anio={anio} onChange={handleFiltroChange} />
       </div>
 
@@ -163,10 +139,11 @@ const styles = {
     justifyContent: "space-between",
     alignItems: "flex-start",
     marginBottom: 20,
+    flexWrap: "wrap",
+    gap: 12,
   },
   titulo: { fontSize: 22, fontWeight: 600, marginBottom: 4 },
   subtitulo: { fontSize: 13, color: "var(--text-secondary)" },
-
   filtrosBar: {
     display: "flex",
     flexWrap: "wrap",
@@ -205,7 +182,6 @@ const styles = {
     cursor: "pointer",
     outline: "none",
   },
-
   paginacion: {
     display: "flex",
     justifyContent: "center",
