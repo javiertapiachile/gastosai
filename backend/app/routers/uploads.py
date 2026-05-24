@@ -199,3 +199,59 @@ async def _clasificar_batch(db: Session, batch_id: int, total: int) -> None:
         logger.error(f"[batch {batch_id}] Error clasificando: {e}\n{traceback.format_exc()}")
 
     crud_uploads.update_batch_progress(db, batch_id, total, total, BatchStatus.completado)
+
+
+@router.post("/lote", response_model=list[UploadBatchOut], status_code=202)
+async def subir_archivos_lote(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    """
+    Recibe múltiples archivos bancarios y procesa cada uno como batch independiente.
+    Retorna la lista de batches creados para hacer polling individual.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No se enviaron archivos")
+
+    if len(files) > 20:
+        raise HTTPException(status_code=400, detail="Máximo 20 archivos por lote")
+
+    batches_creados = []
+
+    for file in files:
+        try:
+            extension = validar_extension(file.filename or "")
+        except ValueError as e:
+            logger.warning(f"[lote] Archivo ignorado '{file.filename}': {e}")
+            continue
+
+        contenido = await file.read()
+        try:
+            validar_tamanio(len(contenido))
+        except ValueError as e:
+            logger.warning(f"[lote] Archivo ignorado '{file.filename}': {e}")
+            continue
+
+        nombre_limpio = limpiar_nombre(file.filename or "archivo")
+        batch = crud_uploads.create_batch(
+            db,
+            UploadBatchCreate(nombre_archivo=nombre_limpio, tipo_archivo=extension),
+        )
+        batches_creados.append(batch)
+
+        background_tasks.add_task(
+            _procesar_archivo_background,
+            batch_id=batch.id,
+            contenido=contenido,
+            nombre_archivo=nombre_limpio,
+            tipo_archivo=extension,
+        )
+
+    if not batches_creados:
+        raise HTTPException(
+            status_code=400,
+            detail="Ningún archivo válido en el lote. Verifica formatos (csv, xlsx, pdf) y tamaño (max 50MB)."
+        )
+
+    return batches_creados
