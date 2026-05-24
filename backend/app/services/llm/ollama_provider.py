@@ -1,4 +1,7 @@
-"""Proveedor LLM para Ollama (modelos locales sin costo de API)."""
+"""
+Proveedor LLM para Ollama (modelos locales sin costo de API).
+Usa /api/chat que es compatible con todos los modelos modernos de Ollama.
+"""
 
 import httpx
 from app.services.llm.base import AbstractLLMProvider
@@ -8,11 +11,12 @@ from app.config import settings
 class OllamaProvider(AbstractLLMProvider):
     """
     Conecta con Ollama corriendo en el host.
-    Soporta cualquier modelo descargado: llama3, mistral, gemma2, etc.
+    Soporta cualquier modelo: gemma4, llama3, mistral, etc.
+    Usa el endpoint /api/chat (compatible con Ollama >= 0.1.14).
     """
 
     def __init__(self):
-        self._base_url = settings.ollama_base_url
+        self._base_url = settings.ollama_base_url.rstrip("/")
         self._modelo = settings.ollama_model
 
     @property
@@ -20,16 +24,17 @@ class OllamaProvider(AbstractLLMProvider):
         return f"ollama/{self._modelo}"
 
     async def completar(self, prompt_sistema: str, prompt_usuario: str) -> str:
-        prompt_completo = f"{prompt_sistema}\n\n{prompt_usuario}"
-
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             respuesta = await client.post(
-                f"{self._base_url}/api/generate",
+                f"{self._base_url}/api/chat",
                 json={
                     "model": self._modelo,
-                    "prompt": prompt_completo,
                     "stream": False,
+                    "messages": [
+                        {"role": "system", "content": prompt_sistema},
+                        {"role": "user",   "content": prompt_usuario},
+                    ],
                 },
             )
             respuesta.raise_for_status()
-            return respuesta.json().get("response", "")
+            return respuesta.json()["message"]["content"]

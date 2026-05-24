@@ -24,25 +24,20 @@ def get_transactions(
     busqueda: Optional[str] = None,
     solo_cargos: Optional[bool] = None,
 ) -> tuple[list[Transaction], int]:
-    """Retorna (lista_transacciones, total) con filtros opcionales."""
     query = db.query(Transaction)
 
     if categoria_id is not None:
         query = query.filter(Transaction.categoria_id == categoria_id)
-
     if mes is not None:
         query = query.filter(extract("month", Transaction.fecha) == mes)
-
     if anio is not None:
         query = query.filter(extract("year", Transaction.fecha) == anio)
-
     if busqueda:
         termino = f"%{busqueda}%"
         query = query.filter(
             Transaction.descripcion_original.ilike(termino)
             | Transaction.comercio_limpio.ilike(termino)
         )
-
     if solo_cargos is not None:
         query = query.filter(Transaction.es_cargo == solo_cargos)
 
@@ -65,10 +60,15 @@ def create_transaction(db: Session, tx: TransactionCreate) -> Transaction:
 
 
 def create_transactions_bulk(db: Session, txs: list[dict]) -> list[Transaction]:
-    """Inserción masiva para mejorar rendimiento al importar archivos."""
+    """
+    Inserción masiva. Hace refresh de cada objeto para obtener IDs generados.
+    """
     db_txs = [Transaction(**tx) for tx in txs]
     db.add_all(db_txs)
     db.commit()
+    # BUGFIX: refresh cada objeto para cargar el ID asignado por SQLite
+    for tx in db_txs:
+        db.refresh(tx)
     return db_txs
 
 
@@ -97,9 +97,7 @@ def get_kpi_summary(
     mes: Optional[int] = None,
     anio: Optional[int] = None,
 ) -> KPISummary:
-    """Calcula KPIs para el dashboard."""
     query = db.query(Transaction)
-
     if mes is not None:
         query = query.filter(extract("month", Transaction.fecha) == mes)
     if anio is not None:
@@ -113,7 +111,6 @@ def get_kpi_summary(
     clasificadas = sum(1 for t in todas if t.categoria_id is not None)
     pct = (clasificadas / total_tx * 100) if total_tx > 0 else 0.0
 
-    # Categoría con mayor gasto
     categoria_top = None
     gasto_top = None
     if total_tx > 0:
@@ -146,7 +143,6 @@ def get_gastos_por_categoria(
     mes: Optional[int] = None,
     anio: Optional[int] = None,
 ) -> list[dict]:
-    """Agrupa gastos por categoría para el gráfico de torta."""
     query = (
         db.query(
             Category.nombre,
@@ -163,7 +159,6 @@ def get_gastos_por_categoria(
         query = query.filter(extract("year", Transaction.fecha) == anio)
 
     filas = query.group_by(Category.nombre, Category.color).order_by(func.sum(Transaction.monto).desc()).all()
-
     return [
         {"nombre": f.nombre, "color": f.color, "total": round(f.total, 2), "cantidad": f.cantidad}
         for f in filas
@@ -171,7 +166,6 @@ def get_gastos_por_categoria(
 
 
 def get_evolucion_mensual(db: Session, anio: Optional[int] = None) -> list[dict]:
-    """Evolución de gastos mes a mes para el gráfico de líneas."""
     query = (
         db.query(
             extract("year", Transaction.fecha).label("anio"),
@@ -184,7 +178,6 @@ def get_evolucion_mensual(db: Session, anio: Optional[int] = None) -> list[dict]
         query = query.filter(extract("year", Transaction.fecha) == anio)
 
     filas = query.group_by("anio", "mes").order_by("anio", "mes").all()
-
     meses_es = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
     return [
         {"anio": int(f.anio), "mes": int(f.mes), "mes_nombre": meses_es[int(f.mes)-1], "total": round(f.total, 2)}

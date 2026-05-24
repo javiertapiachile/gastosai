@@ -1,6 +1,5 @@
 /**
- * Página de importación de extractos bancarios.
- * Soporta drag & drop, selección de archivo y polling de progreso.
+ * Página de importación con historial y botón de reclasificación manual.
  */
 
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -28,24 +27,20 @@ export default function ImportarPage() {
   const [batch, setBatch] = useState(null);
   const [error, setError] = useState(null);
   const [historial, setHistorial] = useState([]);
+  const [reclasificando, setReclasificando] = useState(null);
   const inputRef = useRef(null);
   const pollingRef = useRef(null);
 
-  // Cargar historial al montar
   useEffect(() => {
     cargarHistorial();
-    return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
-    };
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current); };
   }, []);
 
   async function cargarHistorial() {
     try {
       const { data } = await client.get("/uploads/");
       setHistorial(data);
-    } catch {
-      /* silencioso */
-    }
+    } catch { /* silencioso */ }
   }
 
   function iniciarPolling(batchId) {
@@ -69,16 +64,13 @@ export default function ImportarPage() {
     setError(null);
     setBatch(null);
 
-    // Validar extensión en el cliente
     const ext = archivo.name.split(".").pop().toLowerCase();
     if (!["csv", "xlsx", "pdf"].includes(ext)) {
       setError(`Formato .${ext} no soportado. Usa CSV, XLSX o PDF.`);
       return;
     }
-
-    // Validar tamaño (50MB)
     if (archivo.size > 50 * 1024 * 1024) {
-      setError(`Archivo demasiado grande (${(archivo.size / 1024 / 1024).toFixed(1)} MB). Máximo 50 MB.`);
+      setError(`Archivo demasiado grande. Máximo 50 MB.`);
       return;
     }
 
@@ -93,9 +85,20 @@ export default function ImportarPage() {
       setBatch(data);
       iniciarPolling(data.id);
     } catch (err) {
-      const msg = err.response?.data?.detail || "Error al subir el archivo";
-      setError(msg);
+      setError(err.response?.data?.detail || "Error al subir el archivo");
       setSubiendo(false);
+    }
+  }
+
+  async function reclasificar(batchId) {
+    setReclasificando(batchId);
+    try {
+      await client.post(`/uploads/reclasificar/${batchId}`);
+      setTimeout(cargarHistorial, 2000);
+    } catch (err) {
+      alert(err.response?.data?.detail || "Error al reclasificar");
+    } finally {
+      setTimeout(() => setReclasificando(null), 3000);
     }
   }
 
@@ -106,19 +109,11 @@ export default function ImportarPage() {
     if (archivo) subirArchivo(archivo);
   }, []);
 
-  const onDragOver = (e) => { e.preventDefault(); setArrastrandoSobre(true); };
-  const onDragLeave = () => setArrastrandoSobre(false);
-  const onChangeInput = (e) => {
-    const archivo = e.target.files[0];
-    if (archivo) subirArchivo(archivo);
-    e.target.value = "";
-  };
-
   return (
     <div style={styles.wrapper}>
       <h1 style={styles.titulo}>Importar extracto</h1>
       <p style={styles.subtitulo}>
-        Sube tu estado de cuenta bancario y GastosAI clasificará cada transacción automáticamente.
+        Sube tu estado de cuenta y GastosAI clasificará cada transacción automáticamente.
       </p>
 
       {/* Zona de drop */}
@@ -129,25 +124,18 @@ export default function ImportarPage() {
           ...(subiendo ? styles.dropZoneSubiendo : {}),
         }}
         onDrop={onDrop}
-        onDragOver={onDragOver}
-        onDragLeave={onDragLeave}
+        onDragOver={(e) => { e.preventDefault(); setArrastrandoSobre(true); }}
+        onDragLeave={() => setArrastrandoSobre(false)}
       >
-        <div style={styles.dropIcono}>
-          {subiendo ? "⏳" : "📂"}
-        </div>
+        <div style={styles.dropIcono}>{subiendo ? "⏳" : "📂"}</div>
         <p style={styles.dropTitulo}>
           {subiendo ? "Procesando archivo..." : "Arrastra tu extracto aquí"}
         </p>
-        <p style={styles.dropSub}>
-          Formatos soportados: .xlsx · .csv · .pdf — hasta 50 MB
-        </p>
+        <p style={styles.dropSub}>CSV · XLSX · PDF — hasta 50 MB</p>
 
         {!subiendo && (
           <>
-            <button
-              style={styles.botonSeleccionar}
-              onClick={() => inputRef.current?.click()}
-            >
+            <button style={styles.botonSeleccionar} onClick={() => inputRef.current?.click()}>
               Seleccionar archivo
             </button>
             <input
@@ -155,21 +143,16 @@ export default function ImportarPage() {
               type="file"
               accept=".csv,.xlsx,.pdf"
               style={{ display: "none" }}
-              onChange={onChangeInput}
+              onChange={(e) => { const f = e.target.files[0]; if (f) subirArchivo(f); e.target.value = ""; }}
             />
           </>
         )}
       </div>
 
-      {/* Error */}
       {error && (
-        <div style={styles.errorBox}>
-          <span style={{ marginRight: 8 }}>⚠️</span>
-          {error}
-        </div>
+        <div style={styles.errorBox}>⚠️ {error}</div>
       )}
 
-      {/* Progreso del batch */}
       {batch && (
         <div style={styles.progresoBox}>
           <div style={styles.progresoHeader}>
@@ -178,67 +161,61 @@ export default function ImportarPage() {
               {ESTADOS_TEXTO[batch.estado]}
             </span>
           </div>
-
           <div style={styles.barraTrack}>
-            <div
-              style={{
-                ...styles.barraFill,
-                width: `${batch.progreso}%`,
-                backgroundColor: ESTADOS_COLOR[batch.estado],
-                transition: "width 0.5s ease",
-              }}
-            />
+            <div style={{
+              ...styles.barraFill,
+              width: `${batch.progreso}%`,
+              backgroundColor: ESTADOS_COLOR[batch.estado],
+            }} />
           </div>
-
           <div style={styles.progresoDetalle}>
             {batch.estado === "completado" ? (
               <span style={{ color: "var(--success)" }}>
-                ✅ {batch.total_transacciones} transacciones importadas correctamente
+                ✅ {batch.total_transacciones} transacciones importadas y clasificadas
               </span>
             ) : batch.estado === "error" ? (
-              <span style={{ color: "var(--danger)" }}>
-                ❌ {batch.mensaje_error}
-              </span>
+              <span style={{ color: "var(--danger)" }}>❌ {batch.mensaje_error}</span>
             ) : (
               <span style={{ color: "var(--text-secondary)" }}>
-                {batch.transacciones_procesadas} de {batch.total_transacciones || "?"} transacciones
-                · {Math.round(batch.progreso)}%
+                {batch.transacciones_procesadas} de {batch.total_transacciones || "?"} · {Math.round(batch.progreso)}%
               </span>
             )}
           </div>
         </div>
       )}
 
-      {/* Historial */}
       {historial.length > 0 && (
         <div style={styles.historialBox}>
           <h2 style={styles.historialTitulo}>Historial de importaciones</h2>
-          <div style={styles.historialLista}>
-            {historial.map((h) => (
-              <div key={h.id} style={styles.historialItem}>
-                <div style={styles.historialLeft}>
-                  <span style={styles.historialNombre}>{h.nombre_archivo}</span>
-                  <span style={styles.historialFecha}>
-                    {new Date(h.creado_en).toLocaleDateString("es-CL", {
-                      day: "2-digit", month: "short", year: "numeric",
-                    })}
-                  </span>
-                </div>
-                <div style={styles.historialRight}>
-                  <span style={styles.historialCount}>
-                    {h.total_transacciones} tx
-                  </span>
-                  <span style={{
-                    ...styles.historialEstado,
-                    color: ESTADOS_COLOR[h.estado],
-                    backgroundColor: `${ESTADOS_COLOR[h.estado]}18`,
-                  }}>
-                    {h.estado}
-                  </span>
-                </div>
+          {historial.map((h) => (
+            <div key={h.id} style={styles.historialItem}>
+              <div style={styles.historialLeft}>
+                <span style={styles.historialNombre}>{h.nombre_archivo}</span>
+                <span style={styles.historialFecha}>
+                  {new Date(h.creado_en).toLocaleDateString("es-CL", { day: "2-digit", month: "short", year: "numeric" })}
+                </span>
               </div>
-            ))}
-          </div>
+              <div style={styles.historialRight}>
+                <span style={styles.historialCount}>{h.total_transacciones} tx</span>
+                <span style={{
+                  ...styles.historialEstado,
+                  color: ESTADOS_COLOR[h.estado],
+                  backgroundColor: `${ESTADOS_COLOR[h.estado]}18`,
+                }}>
+                  {h.estado}
+                </span>
+                {/* Botón de reclasificación manual */}
+                <button
+                  style={styles.btnReclasificar}
+                  onClick={() => reclasificar(h.id)}
+                  disabled={reclasificando === h.id}
+                  title="Reclasificar todas las transacciones de este archivo con LLM"
+                >
+                  {reclasificando === h.id ? "⏳" : "🔄"}
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -249,7 +226,6 @@ const styles = {
   wrapper: { maxWidth: 640, margin: "0 auto" },
   titulo: { fontSize: 22, fontWeight: 600, marginBottom: 8 },
   subtitulo: { color: "var(--text-secondary)", marginBottom: 28, fontSize: 14 },
-
   dropZone: {
     border: "2px dashed var(--border-strong)",
     borderRadius: "var(--radius-xl)",
@@ -260,91 +236,43 @@ const styles = {
     backgroundColor: "var(--bg-primary)",
     marginBottom: 20,
   },
-  dropZoneActiva: {
-    borderColor: "var(--accent)",
-    backgroundColor: "var(--accent-light)",
-  },
-  dropZoneSubiendo: {
-    cursor: "default",
-    opacity: 0.8,
-  },
+  dropZoneActiva: { borderColor: "var(--accent)", backgroundColor: "var(--accent-light)" },
+  dropZoneSubiendo: { cursor: "default", opacity: 0.8 },
   dropIcono: { fontSize: 36, marginBottom: 12 },
-  dropTitulo: { fontSize: 15, fontWeight: 600, marginBottom: 6, color: "var(--text-primary)" },
+  dropTitulo: { fontSize: 15, fontWeight: 600, marginBottom: 6 },
   dropSub: { fontSize: 13, color: "var(--text-secondary)", marginBottom: 20 },
   botonSeleccionar: {
-    backgroundColor: "var(--accent)",
-    color: "white",
-    border: "none",
-    borderRadius: "var(--radius-md)",
-    padding: "9px 20px",
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: "pointer",
+    backgroundColor: "var(--accent)", color: "white", border: "none",
+    borderRadius: "var(--radius-md)", padding: "9px 20px", fontSize: 13,
+    fontWeight: 500, cursor: "pointer",
   },
-
   errorBox: {
-    backgroundColor: "var(--danger-light)",
-    color: "var(--danger)",
-    borderRadius: "var(--radius-md)",
-    padding: "12px 16px",
-    fontSize: 13,
-    marginBottom: 16,
+    backgroundColor: "var(--danger-light)", color: "var(--danger)",
+    borderRadius: "var(--radius-md)", padding: "12px 16px", fontSize: 13, marginBottom: 16,
   },
-
   progresoBox: {
-    backgroundColor: "var(--bg-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-lg)",
-    padding: "16px 20px",
-    marginBottom: 24,
+    backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
+    borderRadius: "var(--radius-lg)", padding: "16px 20px", marginBottom: 24,
   },
-  progresoHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 10,
-  },
-  progresoNombre: { fontSize: 13, fontWeight: 500, color: "var(--text-primary)" },
-  barraTrack: {
-    height: 6,
-    backgroundColor: "var(--bg-secondary)",
-    borderRadius: "var(--radius-full)",
-    overflow: "hidden",
-    marginBottom: 8,
-  },
-  barraFill: { height: "100%", borderRadius: "var(--radius-full)" },
+  progresoHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  progresoNombre: { fontSize: 13, fontWeight: 500 },
+  barraTrack: { height: 6, backgroundColor: "var(--bg-secondary)", borderRadius: "var(--radius-full)", overflow: "hidden", marginBottom: 8 },
+  barraFill: { height: "100%", borderRadius: "var(--radius-full)", transition: "width 0.5s ease" },
   progresoDetalle: { fontSize: 12 },
-
   historialBox: {
-    backgroundColor: "var(--bg-primary)",
-    border: "1px solid var(--border-default)",
-    borderRadius: "var(--radius-lg)",
-    overflow: "hidden",
+    backgroundColor: "var(--bg-primary)", border: "1px solid var(--border-default)",
+    borderRadius: "var(--radius-lg)", overflow: "hidden",
   },
-  historialTitulo: {
-    fontSize: 13,
-    fontWeight: 600,
-    padding: "14px 20px",
-    borderBottom: "1px solid var(--border-default)",
-    color: "var(--text-secondary)",
-  },
-  historialLista: {},
-  historialItem: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "12px 20px",
-    borderBottom: "1px solid var(--border-default)",
-  },
+  historialTitulo: { fontSize: 13, fontWeight: 600, padding: "14px 20px", borderBottom: "1px solid var(--border-default)", color: "var(--text-secondary)" },
+  historialItem: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 20px", borderBottom: "1px solid var(--border-default)" },
   historialLeft: { display: "flex", flexDirection: "column", gap: 2 },
-  historialNombre: { fontSize: 13, fontWeight: 500, color: "var(--text-primary)" },
+  historialNombre: { fontSize: 13, fontWeight: 500 },
   historialFecha: { fontSize: 11, color: "var(--text-tertiary)" },
   historialRight: { display: "flex", alignItems: "center", gap: 10 },
   historialCount: { fontSize: 12, color: "var(--text-secondary)" },
-  historialEstado: {
-    fontSize: 11,
-    fontWeight: 500,
-    padding: "2px 8px",
-    borderRadius: "var(--radius-full)",
+  historialEstado: { fontSize: 11, fontWeight: 500, padding: "2px 8px", borderRadius: "var(--radius-full)" },
+  btnReclasificar: {
+    background: "none", border: "1px solid var(--border-default)", borderRadius: "var(--radius-sm)",
+    padding: "3px 8px", cursor: "pointer", fontSize: 13,
   },
 };

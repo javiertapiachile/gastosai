@@ -1,8 +1,10 @@
 """
 Endpoint de subida de archivos.
-Fase 3: integra clasificador LLM después del parseo.
+Fase A: logging mejorado + manejo correcto de errores en background task.
 """
 
+import logging
+import traceback
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -11,9 +13,12 @@ from app.schemas.upload import UploadBatchOut, UploadBatchCreate
 from app.crud import uploads as crud_uploads
 from app.crud import transactions as crud_tx
 from app.models.upload import BatchStatus
+from app.models.transaction import Transaction
 from app.services.parser import get_parser
 from app.services.classifier import clasificar_transacciones
 from app.utils.file_utils import validar_extension, validar_tamanio, limpiar_nombre
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -31,16 +36,34 @@ async def obtener_upload(batch_id: int, db: Session = Depends(get_db)):
     return batch
 
 
+@router.post("/reclasificar/{batch_id}", status_code=202)
+async def reclasificar_batch(
+    batch_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint de diagnóstico y recuperación: relanza la clasificación LLM
+    sobre un batch ya importado. Útil cuando la clasificación falló silenciosamente.
+    """
+    batch = crud_uploads.get_batch(db, batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch no encontrado")
+
+    txs = db.query(Transaction).filter(Transaction.batch_id == batch_id).all()
+    if not txs:
+        raise HTTPException(status_code=400, detail="El batch no tiene transacciones")
+
+    background_tasks.add_task(_reclasificar_background, batch_id=batch_id)
+    return {"mensaje": f"Reclasificación iniciada para {len(txs)} transacciones", "batch_id": batch_id}
+
+
 @router.post("/", response_model=UploadBatchOut, status_code=202)
 async def subir_archivo(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """
-    Recibe archivo bancario → parsea → clasifica con LLM.
-    Retorna 202 Accepted con batch_id para polling.
-    """
     try:
         extension = validar_extension(file.filename or "")
     except ValueError as e:
@@ -76,35 +99,46 @@ async def _procesar_archivo_background(
     tipo_archivo: str,
 ) -> None:
     """
-    Background task completo:
-    1. Parsear archivo → transacciones raw
-    2. Insertar transacciones en DB
-    3. Clasificar con LLM (caché + API)
-    4. Actualizar estado del batch
+    Background task con manejo de errores completo y logging detallado.
+    BUGFIX 1: errores ya no se pierden silenciosamente.
     """
     db = SessionLocal()
     try:
-        # Fase A: parseo
+        logger.info(f"[batch {batch_id}] Iniciando procesamiento de '{nombre_archivo}'")
         crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.procesando)
 
-        parser = get_parser(tipo_archivo)
-        resultado = await parser.parsear(contenido, nombre_archivo)
+        # Fase 1: Parseo
+        try:
+            parser = get_parser(tipo_archivo)
+            resultado = await parser.parsear(contenido, nombre_archivo)
+        except Exception as e:
+            msg = f"Error parseando archivo: {e}"
+            logger.error(f"[batch {batch_id}] {msg}\n{traceback.format_exc()}")
+            crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.error, error=msg)
+            return
 
-        if not resultado.exitoso and resultado.errores:
-            crud_uploads.update_batch_progress(
-                db, batch_id, 0, 0, BatchStatus.error,
-                error="; ".join(resultado.errores)
-            )
+        if resultado.errores:
+            msg = "; ".join(resultado.errores)
+            logger.error(f"[batch {batch_id}] Errores de parseo: {msg}")
+            if not resultado.transacciones:
+                crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.error, error=msg)
+                return
+
+        if not resultado.transacciones:
+            msg = "El archivo no contiene transacciones válidas"
+            logger.warning(f"[batch {batch_id}] {msg}")
+            crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.error, error=msg)
             return
 
         total = len(resultado.transacciones)
+        logger.info(f"[batch {batch_id}] Parseadas {total} transacciones")
         crud_uploads.update_batch_progress(db, batch_id, 0, total, BatchStatus.procesando)
 
-        # Insertar en lotes de 50
+        # Fase 2: Inserción en DB
         LOTE = 50
-        ids_insertados = []
+        insertadas = 0
         for i in range(0, total, LOTE):
-            lote = resultado.transacciones[i:i + LOTE]
+            lote_raw = resultado.transacciones[i:i + LOTE]
             datos = [
                 {
                     "descripcion_original": tx.descripcion,
@@ -114,35 +148,55 @@ async def _procesar_archivo_background(
                     "rut_comercio": tx.rut_comercio,
                     "batch_id": batch_id,
                 }
-                for tx in lote
+                for tx in lote_raw
             ]
-            txs_db = crud_tx.create_transactions_bulk(db, datos)
-            ids_insertados.extend([t.id for t in txs_db])
-            crud_uploads.update_batch_progress(
-                db, batch_id, len(ids_insertados), total, BatchStatus.procesando
-            )
+            try:
+                crud_tx.create_transactions_bulk(db, datos)
+                insertadas += len(lote_raw)
+                crud_uploads.update_batch_progress(db, batch_id, insertadas, total, BatchStatus.procesando)
+            except Exception as e:
+                logger.error(f"[batch {batch_id}] Error insertando lote {i//LOTE}: {e}\n{traceback.format_exc()}")
 
-        # Fase B: clasificación LLM
+        logger.info(f"[batch {batch_id}] {insertadas}/{total} transacciones insertadas")
+
+        # Fase 3: Clasificación LLM
         crud_uploads.update_batch_progress(db, batch_id, 0, total, BatchStatus.clasificando)
 
-        # Cargar transacciones recién insertadas para clasificar
-        from app.models.transaction import Transaction
         txs_para_clasificar = (
             db.query(Transaction)
             .filter(Transaction.batch_id == batch_id)
             .all()
         )
 
-        stats = await clasificar_transacciones(db, txs_para_clasificar)
-        print(f"[batch {batch_id}] Clasificación: {stats}")
+        logger.info(f"[batch {batch_id}] Clasificando {len(txs_para_clasificar)} transacciones con LLM")
+
+        try:
+            stats = await clasificar_transacciones(db, txs_para_clasificar)
+            logger.info(f"[batch {batch_id}] Clasificación completada: {stats}")
+        except Exception as e:
+            # La clasificación puede fallar sin invalidar el import
+            logger.error(f"[batch {batch_id}] Error en clasificación: {e}\n{traceback.format_exc()}")
 
         crud_uploads.update_batch_progress(db, batch_id, total, total, BatchStatus.completado)
+        logger.info(f"[batch {batch_id}] Procesamiento completado exitosamente")
 
     except Exception as e:
-        print(f"[batch {batch_id}] Error inesperado: {e}")
-        crud_uploads.update_batch_progress(
-            db, batch_id, 0, 0, BatchStatus.error,
-            error=f"Error inesperado: {str(e)[:400]}"
-        )
+        msg = f"Error inesperado: {str(e)[:400]}"
+        logger.error(f"[batch {batch_id}] {msg}\n{traceback.format_exc()}")
+        crud_uploads.update_batch_progress(db, batch_id, 0, 0, BatchStatus.error, error=msg)
+    finally:
+        db.close()
+
+
+async def _reclasificar_background(batch_id: int) -> None:
+    """Reclasifica todas las transacciones de un batch existente."""
+    db = SessionLocal()
+    try:
+        txs = db.query(Transaction).filter(Transaction.batch_id == batch_id).all()
+        logger.info(f"[reclasificar batch {batch_id}] {len(txs)} transacciones")
+        stats = await clasificar_transacciones(db, txs)
+        logger.info(f"[reclasificar batch {batch_id}] {stats}")
+    except Exception as e:
+        logger.error(f"[reclasificar batch {batch_id}] Error: {e}\n{traceback.format_exc()}")
     finally:
         db.close()
