@@ -1,0 +1,118 @@
+/* ============================================================
+   GastosAI — Design System (CSS Custom Properties)
+   Todas las pantallas deben usar estas variables; no hardcodear colores.
+   ============================================================ */
+
+:root {
+  /* Colores de categorías */
+  --color-alimentacion:    #1D9E75;
+  --color-transporte:      #378ADD;
+  --color-compras:         #EF9F27;
+  --color-entretenimiento: #7F77DD;
+  --color-salud:           #D85A30;
+  --color-servicios:       #5DCAA5;
+  --color-educacion:       #185FA5;
+  --color-viajes:          #E85D24;
+  --color-hogar:           #639922;
+  --color-sin-categoria:   #888780;
+
+  /* Tipografía */
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+
+  /* Espaciado base */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Bordes */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Transiciones */
+  --transition-fast: 120ms ease;
+  --transition-base: 200ms ease;
+
+  /* Colores de UI (modo claro) */
+  --bg-primary:   #ffffff;
+  --bg-secondary: #f6f5f0;
+  --bg-tertiary:  #edecea;
+
+  --text-primary:   #1a1a18;
+  --text-secondary: #5f5e5a;
+  --text-tertiary:  #9c9a92;
+
+  --border-default: rgba(0, 0, 0, 0.10);
+  --border-strong:  rgba(0, 0, 0, 0.20);
+
+  --accent:       #378ADD;
+  --accent-light: #e6f1fb;
+  --accent-text:  #185FA5;
+
+  --success:       #1D9E75;
+  --success-light: #e1f5ee;
+  --warning:       #EF9F27;
+  --warning-light: #faeeda;
+  --danger:        #D85A30;
+  --danger-light:  #faece7;
+}
+
+/* Modo oscuro */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary:   #1a1a18;
+    --bg-secondary: #222220;
+    --bg-tertiary:  #2c2c2a;
+
+    --text-primary:   #f0efe8;
+    --text-secondary: #b4b2a9;
+    --text-tertiary:  #73726c;
+
+    --border-default: rgba(255, 255, 255, 0.10);
+    --border-strong:  rgba(255, 255, 255, 0.18);
+
+    --accent-light: #0c3358;
+    --accent-text:  #85b7eb;
+
+    --success-light: #04342c;
+    --warning-light: #412402;
+    --danger-light:  #4a1b0c;
+  }
+}
+
+/* Reset base */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Utilidades comunes */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
